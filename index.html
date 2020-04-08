@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <!-- https://developer.mozilla.org/en-US/docs/Web/HTTP/CSP -->
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'">
+    <meta http-equiv="X-Content-Security-Policy" content="default-src 'self'; script-src 'self'">
+	<link rel="stylesheet" type="text/css" href="./style.css">
+    <title>Graphical Skipjacker</title>
+	<script src="./jquery-3.4.1.min.js"></script>
+  </head>
+  <body>
+	<div id="top">
+	
+	</div>
+	<div id="mid">
+		<div id="canvHolder">
+			<canvas id="waveformCanvas" class="mainCanvas" height=424></canvas>
+			<canvas id="ruleCanvas" class="mainCanvas" height=424></canvas>
+		</div>
+	</div>
+	<div id="viewStatsHolder">
+		<p id="viewStats">Skipjacker uninitialized</p>
+	</div>
+	<div id="low">
+		<div id="logBoxHolder">
+			<textarea id="logBox" rows="20" cols="60"></textarea>
+			<br>
+			<button type="button" id="consoleClear">Clear</button>
+			<button type="button" id="consoleHelp">Help</button>
+			<button type="button" id="consoleBinds">List Keybinds</button>
+		</div>
+		<div id="patternsHolder">
+			<label> Quick Patterns </label>
+			<br>
+			<button type="button" class="setButton" id="holderGet0">Get</button>
+			<input value="F2█G2" class="holderBox" type="text" id="sampleHolder0" name="fText">
+			<label> 0 </label>
+			<br>
+			<button type="button" class="setButton" id="holderSet0">Set</button>
+			<input value="FGgG" class="holderBox" type="text" id="patternHolder0" name="fText">
+			<br>
+			
+			<div class="shortBR"></div>
+			<button type="button" class="setButton" id="holderGet1">Get</button>
+			<input value="F2█G2" class="holderBox" type="text" id="sampleHolder1" name="fText">
+			<label> 1 </label>
+			<br>
+			<button type="button" class="setButton" id="holderSet1">Set</button>
+			<input value="FfFG" class="holderBox" type="text" id="patternHolder1" name="fText">
+			<br>
+			
+			<div class="shortBR"></div>
+			<button type="button" class="setButton" id="holderGet2">Get</button>
+			<input value="F2█G2" class="holderBox" type="text" id="sampleHolder2" name="fText">
+			<label> 2 </label>
+			<br>
+			<button type="button" class="setButton" id="holderSet2">Set</button>
+			<input value="FFGG" class="holderBox" type="text" id="patternHolder2" name="fText">
+			<br>
+			
+			<div class="shortBR"></div>
+			<button type="button" class="setButton" id="holderGet3">Get</button>
+			<input value="F2█G4█H4" class="holderBox" type="text" id="sampleHolder3" name="fText">
+			<label> 3 </label>
+			<br>
+			<button type="button" class="setButton" id="holderSet3">Set</button>
+			<input value="FGgGgGH" class="holderBox" type="text" id="patternHolder3" name="fText">
+			<br>
+			
+			<div class="shortBR"></div>
+			<button type="button" class="setButton" id="holderGet4">Get</button>
+			<input value="F2█G4█H4" class="holderBox" type="text" id="sampleHolder4" name="fText">
+			<label> 4 </label>
+			<br>
+			<button type="button" class="setButton" id="holderSet4">Set</button>
+			<input value="FGgGHhH" class="holderBox" type="text" id="patternHolder4" name="fText">
+			<br>
+			
+			<div class="shortBR"></div>
+			<button type="button" class="setButton" id="holderGet5">Get</button>
+			<input value="F4█G4█H2" class="holderBox" type="text" id="sampleHolder5" name="fText">
+			<label> 5 </label>
+			<br>
+			<button type="button" class="setButton" id="holderSet5">Set</button>
+			<input value="FGgGgGH" class="holderBox" type="text" id="patternHolder5" name="fText">
+			<br>
+			
+			<div class="shortBR"></div>
+			<button type="button" class="setButton" id="holderGet6">Get</button>
+			<input value="F4█G4█H4█J4" class="holderBox" type="text" id="sampleHolder6" name="fText">
+			<label> 6 </label>
+			<br>
+			<button type="button" class="setButton" id="holderSet6">Set</button>
+			<input value="FGHhHhHJ" class="holderBox" type="text" id="patternHolder6" name="fText">
+			<br>
+			
+			<div class="shortBR"></div>
+			<button type="button" class="setButton" id="holderGet7">Get</button>
+			<input value="F8█G8█H8█J8█K8█L8█N8█M8" class="holderBox" type="text" id="sampleHolder7" name="fText">
+			<label> 7 </label>
+			<br>
+			<button type="button" class="setButton" id="holderSet7">Set</button>
+			<input value="FGHJjJjJKLlLlLNM" class="holderBox" type="text" id="patternHolder7" name="fText">
+			<br>
+		</div>
+		<div id="variablesHolder">
+			<button type="button" class="fileButton" id="inWAVPathBrowse">Load WAV</button>
+			<button type="button" class="fileButton" id="inWAVPathButton">Reload</button>
+			<input type="text" class="pathBox" id="inPathWAVText" name="fText">
+			<br>
+			<button type="button" class="fileButton" id="inRulePathBrowse">Load Rules</button>
+			<button type="button" class="fileButton" id="inRulePathButton">Reload</button>
+			<input type="text" class="pathBox" id="inPathRuleText" name="fText">
+			<br>
+			<button type="button" class="fileButton" id="outRulePathBrowse">Save Rules</button>
+			<button type="button" class="fileButton" id="outRulePathButton">Resave</button>
+			<input type="text" class="pathBox" id="outPathRuleText" name="fText">
+			<br>
+			<button type="button" class="fileButton" id="outWAVPathBrowse">Export</button>
+			<button type="button" class="fileButton" id="outWAVPathButton">Reexport</button>
+			<input type="text" class="pathBox" id="outPathWAVText" name="fText">
+			<br>
+			<br>
+			<input value="1024" class="numBox" type="text" id="sppNum" name="fText">
+			<button type="button" class="mathButton" id="sppDiv">/=</button>
+			<button type="button" class="mathButton" id="sppSub">-=</button>
+			<button type="button" class="mathButton" id="sppAdd">+=</button>
+			<button type="button" class="mathButton" id="sppMul">*=</button>
+			<input value="4" class="numBox" type="text" id="sppFac" name="fText">
+			<label> Samples/Px </label>
+			<br>
+			<input value="0" class="numBox" type="text" id="offsetNum" name="fText">
+			<button type="button" class="mathButton" id="offsetDiv">/=</button>
+			<button type="button" class="mathButton" id="offsetSub">-=</button>
+			<button type="button" class="mathButton" id="offsetAdd">+=</button>
+			<button type="button" class="mathButton" id="offsetMul">*=</button>
+			<input value="1" class="numBox" type="text" id="offsetFac" name="fText">
+			<label> Offset (sec) </label>
+			<br>
+			<br>
+			<button type="button" class="setButton" id="samplesSet">Set</button>
+			<button type="button" class="setButton" id="samplesGet">Get</button>
+			<input value="F2█G2" class="textBox" type="text" id="samplesText" name="fText">
+			<label> Samples </label>
+			<br>
+			<button type="button" class="setButton" id="patternSet">Set</button>
+			<button type="button" class="setButton" id="patternGet">Get</button>
+			<input value="FGgG" class="textBox" type="text" id="patternText" name="fText">
+			<label> Pattern </label>
+			<br>
+			<button type="button" class="setButton" id="lengthSet">Set</button>
+			<button type="button" class="setButton" id="lengthGet">Get</button>
+			<button type="button" class="setButton" id="lengthAvg">G.Avg</button>
+			<input value="1" class="numBox" type="text" id="lengthNum" name="fText">
+			<button type="button" class="mathButton" id="lengthDiv">/=</button>
+			<button type="button" class="mathButton" id="lengthSub">-=</button>
+			<button type="button" class="mathButton" id="lengthAdd">+=</button>
+			<button type="button" class="mathButton" id="lengthMul">*=</button>
+			<input value="2" class="numBox" type="text" id="lengthFac" name="fText">
+			<label> Length </label>
+			<br>
+			<button type="button" class="setButton" id="factorSet">Set</button>
+			<button type="button" class="setButton" id="factorGet">Get</button>
+			<button type="button" class="setButton" id="factorAvg">G.Avg</button>
+			<input value="2" class="numBox" type="text" id="factorNum" name="fText">
+			<button type="button" class="mathButton" id="factorDiv">/=</button>
+			<button type="button" class="mathButton" id="factorSub">-=</button>
+			<button type="button" class="mathButton" id="factorAdd">+=</button>
+			<button type="button" class="mathButton" id="factorMul">*=</button>
+			<input value="2" class="numBox" type="text" id="factorFac" name="fText">
+			<label> Factor </label>
+			<br>
+			<button type="button" class="setButton" id="volumeSet">Set</button>
+			<button type="button" class="setButton" id="volumeGet">Get</button>
+			<button type="button" class="setButton" id="volumeAvg">G.Avg</button>
+			<input value="1" class="numBox" type="text" id="volumeNum" name="fText">
+			<button type="button" class="mathButton" id="volumeDiv">/=</button>
+			<button type="button" class="mathButton" id="volumeSub">-=</button>
+			<button type="button" class="mathButton" id="volumeAdd">+=</button>
+			<button type="button" class="mathButton" id="volumeMul">*=</button>
+			<input value="0.05" class="numBox" type="text" id="volumeFac" name="fText">
+			<label> Volume </label>
+			<br>
+			<button type="button" class="setButton" id="allSet">All</button>
+			<button type="button" class="setButton" id="allGet">All</button>
+			<button type="button" class="setButton" id="allAvg">All</button>
+			<input value="1x" class="numBox" type="text" id="repeatNum" name="fText">
+			<button type="button" class="setButton" id="makeRule">Make</button>
+			<br>
+			<br>
+			<button type="button" class="setButton" id="labelSet">Set</button>
+			<button type="button" class="setButton" id="labelGet">Get</button>
+			<input value="" class="textBox" type="text" id="labelText" name="fText">
+			<label> Label </label>
+			<br>
+			<button type="button" class="setButton" id="colorSet">Set</button>
+			<button type="button" class="setButton" id="colorGet">Get</button>
+			<input value="255,0,0" class="textBox" type="text" id="colorText" name="fText">
+			<label> Color </label>
+			<br>
+			<br>
+			<button type="button" class="bigButton playbackButton" id="playIn">Play Input Track [Shift+Space]</button>
+			<br>
+			<button type="button" class="bigButton playbackButton" id="playOut">Play Track Output [Ctrl+Space]</button>
+			<br>
+			<button type="button" class="bigButton" disabled id="stopButton">Stop Playback [Space]</button>
+		</div>
+	</div>
+    <script src="./renderer.js"></script>
+  </body>
+</html>

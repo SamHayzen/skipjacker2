@@ -1,0 +1,84 @@
+#canvHolder {
+	border-style: double;
+	position: relative;
+	height:424px;
+	background-color: #E0E0E0;
+}
+#waveformCanvas {
+	z-index: 0;
+}
+#ruleCanvas {
+	z-index: 1;
+}
+.mainCanvas {
+	position: absolute;
+	height:424;
+	left: 0;
+	top: 0;
+}
+#viewStatsHolder {
+	border-style: solid;
+	padding: 0;
+}
+#viewStats {
+	margin: 0;
+	padding: 0;
+}
+#low {
+	overflow: auto;
+}
+#logBoxHolder {
+	display: inline-block;
+	float: left;
+}
+#patternsHolder {
+	height: 100%;
+	display: inline-block;
+	float: left;
+	padding-left: 6px;
+	padding-right: 6px;
+}
+#variablesHolder {
+	height: 100%;
+	display: inline-block;
+	float: right;
+}
+.numBox {
+	width: 56px;
+}
+.pathBox {
+	width: 306px;
+}
+.textBox {
+	width: 296px;
+}
+.holderBox {
+	width: 206px;
+}
+.medBox {
+	width: 126px;
+}
+.holderBox, .textBox, .numBox, .medBox, .pathBox {
+	margin-left: -4px;
+}
+.fileButton {
+	width: 75px;
+}
+.mathButton {
+	width: 35px;
+}
+.setButton {
+	width: 40px;
+}
+.bigButton {
+	width: 460px;
+}
+.mathButton, .fileButton, .setButton, .bigButton {
+	padding-left: 0;
+	padding-right: 0;
+	margin-left: -4px;
+}
+.shortBR {
+	height: 6px;
+	width: 1px;
+}
