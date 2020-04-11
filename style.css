@@ -38,10 +38,14 @@
 	padding-left: 6px;
 	padding-right: 6px;
 }
-#variablesHolder {
+#settingsHolder {
 	height: 100%;
 	display: inline-block;
 	float: right;
+}
+#tabsHolder {
+	border-style: solid;
+	margin-left: -4px;
 }
 .numBox {
 	width: 56px;
@@ -61,6 +65,9 @@
 .holderBox, .textBox, .numBox, .medBox, .pathBox {
 	margin-left: -4px;
 }
+.tabButton {
+	margin-right: -4px;
+}
 .fileButton {
 	width: 75px;
 }
@@ -73,10 +80,14 @@
 .bigButton {
 	width: 460px;
 }
-.mathButton, .fileButton, .setButton, .bigButton {
+.mathButton, .fileButton, .setButton{
 	padding-left: 0;
 	padding-right: 0;
 	margin-left: -4px;
+}
+.bigButton {
+	padding-left: 0;
+	padding-right: 0;
 }
 .shortBR {
 	height: 6px;

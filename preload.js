@@ -2,7 +2,6 @@ const fs = require('fs');
 const Mousetrap = require('mousetrap');
 const player = require('node-wav-player');
 const { dialog } = require('electron').remote;
-const Mp32Wav = require('mp3-to-wav');
 var ctx;
 var canvas, canvas2;
 var project;
@@ -14,9 +13,11 @@ var rendSet = { 	//render settings, for the canvas
 	rsr: 1024,	 	//render sample ratio
 	viewingChan: -1 //specific channel being looked at
 };
-var exportSet = {		      //export settings
-	smoothingRate: 64,        //how many samples to smooth
+var exportSet = {		      	//export settings
+	smoothingRate: 64,        	//how many samples to smooth
 	depoppingSensitivity: 256,
+	finalSpeedFactor: 1,
+	blurLength: 256, 		  	//measured in samples
 	invertReverses: false
 };
 
@@ -29,7 +30,10 @@ const canvasFontSize = 24;
 
 const numQuickPatternBoxes = 8;
 
-
+const tabs = [
+	["varTabButton","variablesHolder"],
+	["expTabButton","exportSettingsHolder"]
+];
 
 
 
@@ -566,6 +570,10 @@ function getSegmentSection(segment, start, length, vol){//measured in samples
 	if(isNotNum(vol)) vol = 1; 
 	var holdSeg = [];
 	var numChannels = segment.length; //get num channels
+	if(start < 0){
+		length += start;
+		start = 0; //if the start is before the actual start of the segment, move it to the start and keep the end in the same place
+	}
 	for(var i = 0; i<numChannels; i++) holdSeg.push([]); //add a channel to the out
 	start = r(start);
 	length = r(length);
@@ -590,6 +598,19 @@ function generateSilentSegment(length, sampleRate, numChannels){
 	}
 	return ret;
 }
+
+function generateEmptySegment(numChan){
+	var ret = [];
+	for(var i = 0; i < numChan; i++) ret.push([]); //push an empty channel;
+	return ret;
+}
+
+function copySegment(segment){
+	var ret = [];
+	for(var i = 0; i < segment.length; i++) ret.push(segment[i].clone());
+	return ret;
+}
+var cloneSegment = copySegment; //redundancy
 
 function reverseSegment(segment){
 	var ret = [];
@@ -654,7 +675,7 @@ function concatSegments(seg1,seg2){
 	return ret;
 }
 
-function appendSegment(seg1,seg2){ //like concatSegments(), but faster maybe.  Modifies the original array
+function appendSegment(seg1,seg2,noSew){ //like concatSegments(), but faster maybe.  Modifies the original array
 	if(seg1.length !== seg2.length){
 		log("!ERROR! appendSegment() was passed two segments with different numbers of channels");
 		return [[]];
@@ -665,7 +686,8 @@ function appendSegment(seg1,seg2){ //like concatSegments(), but faster maybe.  M
 			seg1[k].push(seg2[k][i]);
 		}			
 	}
-	sewSegment(seg1,seam);
+	if(!noSew) sewSegment(seg1,seam);
+	return seam; //return the position of the seam
 }
 
 function sewSegment(seg,seam,smoothLevel){ //seam is a point in the segment measured in samples from the beginning
@@ -711,7 +733,7 @@ function depopSegment(inseg,sensitivity){
 	log("!removed "+remCount+" pops");
 }
 
-function mp3toWAV(path){
+function mp3toWAV(path){ //yeah, this module doesn't work.  Don't try to use it.
 	if(path.toLowerCase().endsWith(".wav")) return path; //if it's already a wav, somehow, just pass it back
 	if(!path.toLowerCase().endsWith(".mp3")){
 		log("!ERROR! mp3toWAV() passed path of non-mp3 file ("+path+")");
@@ -729,6 +751,70 @@ function mp3toWAV(path){
 	//}
 	return path2;
 }//returns new path to WAV
+
+function calcPlayTime(segment,sampleRate){
+	if(typeof segment == 'number'){
+		return truncate(segment/sampleRate); //if passed number of samples
+	}else{
+		return truncate(segment[0].length/sampleRate); //if passed segment
+	}
+}
+
+function appendWithBlur(seg,tailSeg){ //should be passed a segment (2d float array) and a segWithLead
+	if(seg.leadin !== undefined) seg = seg.data; //if passed a segWithLead, point to its .data
+	var blurLength = tailSeg.leadin[0].length;
+	if(blurLength > seg[0].length) blurLength = seg[0].length - 1; //if the blur length is longer than the first segment, set it to the length of the first segment
+	var seam = appendSegment(seg,tailSeg.data,true);
+	
+	var leadinPos; //what position in the leadin pos we're reading from
+	var ratio;
+	for(var k = 0; k < seg.length; k++){ //step through the channels
+		leadinPos = 0;
+		for(var i = 0; i < blurLength; i++){
+			ratio = (blurLength-i)/blurLength; //make a gradient
+			iratio = 1-ratio;
+			seg[k][i+seam-blurLength] = seg[k][i+seam-blurLength]*ratio + tailSeg.leadin[k][leadinPos++]*iratio; //do the blur
+		}
+	}
+}
+
+class segWithLead { //basically just two segments, with the first being the main segment, and the second being a small segment leading into it
+	constructor(segment, start, length, factor, blurLength){ //pass it a source segment, the start & length of the section you want to take, and how long the leadin should be.
+		if(isNotNum(blurLength)) blurLength = exportSet.blurLength; //get default if undef
+		if(isNotNum(factor)) factor = 1; //default to 1
+		if(isNum(length)){ //if passed (most) all arguments
+			var reversed = false;
+			
+			if(length < 0){ // if length is negative, it means segment is reversed
+				length *= -1;
+				reversed = true;
+			}
+			if(length == 0){
+				start = 0;
+				length = segment[0].length; //if input length is set to zero, just get the whole track
+			}
+			this.data = [];
+			this.leadin = [];
+			this.data = speedSegment(getSegmentSection(segment,start,length),factor); //get the data
+			if(!reversed){
+				this.leadin = speedSegment(getSegmentSection(segment, start-blurLength*factor, blurLength*factor),factor); //get the leadin
+			}else{
+				this.data = reverseSegment(this.data);
+				this.leadin = reverseSegment(speedSegment(getSegmentSection(segment, start+length, blurLength*2),factor)); //get the leadin
+			}
+		}else{
+			if(typeof segment == 'object'){
+				if(segment.leadin !== undefined){ //if passed another segWithLead
+					this.data = cloneSegment(segment.data);
+					this.leadin = cloneSegment(segment.leadin);
+				}else{ //if just passed a segment
+					this.data = cloneSegment(segment);
+					this.leadin = generateEmptySegment(segment.length);
+				}
+			}
+		}
+	}
+}
 
 class WAVFile {
 	constructor(inUint8Array){//give it raw WAV data
@@ -826,18 +912,21 @@ class WAVFile {
 //███████████████████████████████████████████//SKIPJACKER SECTION//███████████████████████████████████████████//
 
 function skipjack(audio,inRules){
-	var ret = [];
-	for(var i = 0; i < audio.length; i++) ret.push([]);
+	var ret = generateEmptySegment(audio.length);
 	var holdRule;
 	var holdSamples;
 	for(var i = 0; i < inRules.length; i++){
 		holdRule = inRules[i];
 		if(!holdRule.autoLabel) log(">skipjacking "+holdRule.label+"...");
 		holdSamples = new sampleBundle(holdRule.samples);
-		holdSamples.collectSamples(getSegmentSection(audio,holdRule.start,holdRule.length,holdRule.volume));
-		appendSegment(ret,holdSamples.mixSamples(holdRule.pattern,holdRule.factor,1));
+		holdSamples.mixSamples(audio,ret,holdRule.start,holdRule.length,holdRule.pattern,holdRule.factor,1);
 	}
 	log("!Finished skipjacking track");
+	if(exportSet.finalSpeedFactor != 1){
+		log(">Speed adjusting final track...");
+		ret = speedSegment(ret,exportSet.finalSpeedFactor);
+	}
+	log("$Final track playtime is "+calcPlayTime(ret,inWAV.getSampleRate())+" sec");
 	return ret;
 }
 
@@ -875,44 +964,44 @@ class audioSample{ //like a normal sampleListing, but meant to hold audio
 	constructor(inSampleListing){
 		this.label = inSampleListing.label;
 		this.portion = inSampleListing.portion;
-		this.data = [];
+		this.forwardSegment = Object;
+		this.backwardSegment = Object; //both intended to be segWithLeads
 	}
 }
 
-class sampleBundle{ //like a normal sampleListing, but many of them, with audio and added functionality
+class sampleBundle{ //like a normal sampleListing, but many of them, with added functionality
 	constructor(inSamples){//pass it a sampleListing array
 		this.samples = [];
-		for(var i = 0; i < inSamples.length; i++) this.samples.push(new audioSample(inSamples[i]));
-	}
-	collectSamples(inSegment){
-		var samples = this.samples;
+		for(var i = 0; i < inSamples.length; i++) this.samples.push(new sampleListing(inSamples[i]));
 		var offset = 0;
-		var holdLength = 0;
 		for(var i = 0; i < this.samples.length; i++){
-			holdLength = r(samples[i].portion*inSegment[0].length);
-			samples[i].data = getSegmentSection(inSegment,offset, holdLength);
-			offset+=holdLength;
-			offset++;
+			this.samples[i].offset = offset;
+			offset += this.samples[i].portion; //calculate the starts of all the segments (measured in portion of the whole)
 		}
 	}
-	mixSamples(pattern,factor,expectedRatio){
+	mixSamples(inSeg,outSeg,start,length,pattern,factor,expectedRatio){ //inSeg is source audio, outSeg is output audio being built.  Start and length are of the rule these samples are of
 		if(typeof pattern !== 'string'){
 			log("!ERROR! sampleBundle.mixSamples() passed non-string as pattern ("+pattern+")\n$returning empty segment");
 			return [];
 		}
 		var samples = this.samples;
-		var numChan = samples[0].data.length; //get num channels
+		var numChan = inSeg.length; //get num channels
 		var labels = pattern.split("");
-		var holdSeg = [];
 		var endLength = 0;
-		for(var i = 0; i < numChan; i++) holdSeg.push([]); //push a channel
+		var holdStart, holdLength, holdLeadSeg;
 		for(var i = 0; i < labels.length; i++){
 			for(var q = 0; q < samples.length; q++){
 				if(samples[q].label == labels[i].toUpperCase()){
 					if(samples[q].label == labels[i]){//forwards
-						appendSegment(holdSeg, samples[q].data);
+						var holdStart = samples[q].offset*length+start; //start of sample
+						var holdLength = samples[q].portion*length; //length of sample
+						holdLeadSeg = new segWithLead(inSeg,holdStart,holdLength,factor);
+						appendWithBlur(outSeg,holdLeadSeg);
 					}else{//backwards
-						appendSegment(holdSeg, reverseSegment(samples[q].data));
+						var holdStart = samples[q].offset*length+start; //start of sample
+						var holdLength = samples[q].portion*length; //length of sample
+						holdLeadSeg = new segWithLead(inSeg,holdStart,holdLength*-1,factor);
+						appendWithBlur(outSeg,holdLeadSeg);
 					}
 					endLength+=samples[q].portion;
 					break;
@@ -920,7 +1009,6 @@ class sampleBundle{ //like a normal sampleListing, but many of them, with audio 
 			}
 		}
 		if(truncate(endLength/factor) !== expectedRatio) log("!WARNING! segment sample/playtime ratio does not meet desired ratio\n$"+truncate(endLength/factor)+"/1 vs "+expectedRatio+"/1");
-		return speedSegment(holdSeg, factor);
 	}
 }
 
@@ -1374,17 +1462,17 @@ class canvasRenderer {
 			
 			holdLeft = leftEdge+2;
 			
-			holdLabels = holdRule.pattern.split("");
+			holdLabels = holdRule.pattern.split(""); //render the pattern
 			for(var i = 0; i < holdLabels.length; i++){
 				if(i.mod(2) == 0){ col2.mult(0.8);
 				}else{ col2.mult(1/0.8); }
 				
 				holdSample = holdRule.getSampleByLabel(holdLabels[i]);
 				if(holdSample){
-					holdNum = holdSample.portion*innerWidth/holdRule.factor;
+					holdNum = holdSample.portion*innerWidth/(holdRule.factor*exportSet.finalSpeedFactor);
 					ctx.fillStyle = col2.x();
 				}else{
-					holdNum = holdRule.samples[0].portion*innerWidth/holdRule.factor; //uh oh, this sample isn't listed, default to the first sample and hope it exists;
+					holdNum = holdRule.samples[0].portion*innerWidth/(holdRule.factor*exportSet.finalSpeedFactor); //uh oh, this sample isn't listed, default to the first sample and hope it exists;
 					drawWarning(ctx,holdLeft+holdNum/2,ruleHeadspace+this.getWaveHeight()-9);
 					ctx.fillStyle = col2.rand(0.75,true);
 				}
@@ -2094,11 +2182,6 @@ window.addEventListener('DOMContentLoaded', () => {
 	canvas2 = document.getElementById('ruleCanvas');
 	logBox = document.getElementById('logBox');
 	
-	document.getElementById('inPathWAVText').value = "./f/fl.wav";
-	document.getElementById('inPathRuleText').value = "./f/f.rule";
-	document.getElementById('outPathRuleText').value = "./f/r.rule";
-	document.getElementById('outPathWAVText').value = "./f/o.wav";
-	
 	waveCan = new canvasRenderer(canvas, canvas2); //get the canvas(es)
 	
 	
@@ -2113,7 +2196,6 @@ window.addEventListener('DOMContentLoaded', () => {
 */
 	reloadCanvas();
 	window.addEventListener('resize', reloadCanvas);
-	
 	
 	
 	//███████████████████████████████████████████//BUTTON FUNCTIONS//███████████████████████████████████████████//
@@ -2158,8 +2240,8 @@ window.addEventListener('DOMContentLoaded', () => {
 			filters:[
 				{name: "Rule File", extensions:["r","rule"]}]
 		}).then(result => {
-			if(result.canceled || result.filePaths.length < 1) return;
-			document.getElementById('outPathRuleText').value = result.filePaths[0];
+			if(result.canceled) return;
+			document.getElementById('outPathRuleText').value = result.filePath;
 			saveRuleFile();
 		}).catch(err => {
 			clog("!ERROR! Error occured getting path.  More info logged to console.");
@@ -2228,6 +2310,7 @@ window.addEventListener('DOMContentLoaded', () => {
 			var pattern = document.getElementById('patternHolder'+num).value;
 			document.getElementById('samplesText').value = samples;
 			document.getElementById('patternText').value = pattern;
+			project.pushRules();
 			setSamples(samples);
 			setPattern(pattern);
 		});
@@ -2235,6 +2318,23 @@ window.addEventListener('DOMContentLoaded', () => {
 			var num = pFloat(e.toElement.id.numerics());
 			document.getElementById('sampleHolder'+num).value = getSamples();
 			document.getElementById('patternHolder'+num).value = getPattern();
+		});
+	}
+	
+	//tabs
+	for(var i = 0; i < tabs.length; i++){
+		document.getElementById(tabs[i][0]).addEventListener("click", function(e){
+			var buttonID = e.toElement.id;
+			var tabNum = -1;
+			for(var i = 0; i < tabs.length; i++){
+				if(tabs[i][0] == buttonID){ //if its for the one that got clicked
+					$("#"+tabs[i][1]).attr("hidden", false);
+					$("#"+tabs[i][0]).attr("disabled", true);
+				}else{
+					$("#"+tabs[i][1]).attr("hidden", true);
+					$("#"+tabs[i][0]).attr("disabled", false);
+				}
+			}
 		});
 	}
 	
@@ -2453,6 +2553,19 @@ window.addEventListener('DOMContentLoaded', () => {
 		setColor(document.getElementById('colorText').value);
 	});
 	
+	//export settings
+	document.getElementById('expFacSet').addEventListener("click", function(){
+		exportSet.finalSpeedFactor = pFloat(document.getElementById('expFac').value);
+		renderRules();
+	});
+	document.getElementById('expSewSet').addEventListener("click", function(){
+		exportSet.smoothingRate = r(pFloat(document.getElementById('expSew').value));
+	});
+	document.getElementById('expBlurSet').addEventListener("click", function(){
+		exportSet.blurLength = r(pFloat(document.getElementById('expBlur').value));
+	});
+	
+	
 	//play/stop buttons
 	document.getElementById('playIn').addEventListener("click", playInWAV);
 	
@@ -2588,6 +2701,8 @@ window.addEventListener('DOMContentLoaded', () => {
 	Mousetrap.bind(['command+space', 'ctrl+space'], playOutWAV);
 	Mousetrap.bind(['space'], stopWAV);
 	Mousetrap.bind(['tab'], changeChannelView);
+	
+	
 })
 
 
