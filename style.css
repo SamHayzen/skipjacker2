@@ -80,7 +80,7 @@
 .bigButton {
 	width: 460px;
 }
-.mathButton, .fileButton, .setButton{
+.mathButton, .fileButton, .setButton, .otherButton{
 	padding-left: 0;
 	padding-right: 0;
 	margin-left: -4px;

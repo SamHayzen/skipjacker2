@@ -133,26 +133,10 @@
 			</div>
 			<div id="tabsHolder">
 				<button type="button" class="tabButton" disabled id="varTabButton">Rule Settings</button>
+				<button type="button" class="tabButton" id="viewTabButton">View Settings</button>
 				<button type="button" class="tabButton" id="expTabButton">Export Settings</button>
 			</div>
 			<div id="variablesHolder">
-				<input value="1024" class="numBox" type="text" id="sppNum" name="fText">
-				<button type="button" class="mathButton" id="sppDiv">/=</button>
-				<button type="button" class="mathButton" id="sppSub">-=</button>
-				<button type="button" class="mathButton" id="sppAdd">+=</button>
-				<button type="button" class="mathButton" id="sppMul">*=</button>
-				<input value="4" class="numBox" type="text" id="sppFac" name="fText">
-				<label> Samples/Px </label>
-				<br>
-				<input value="0" class="numBox" type="text" id="offsetNum" name="fText">
-				<button type="button" class="mathButton" id="offsetDiv">/=</button>
-				<button type="button" class="mathButton" id="offsetSub">-=</button>
-				<button type="button" class="mathButton" id="offsetAdd">+=</button>
-				<button type="button" class="mathButton" id="offsetMul">*=</button>
-				<input value="1" class="numBox" type="text" id="offsetFac" name="fText">
-				<label> Offset (sec) </label>
-				<br>
-				<br>
 				<button type="button" class="setButton" id="samplesSet">Set</button>
 				<button type="button" class="setButton" id="samplesGet">Get</button>
 				<input value="F2█G2" class="textBox" type="text" id="samplesText" name="fText">
@@ -196,11 +180,22 @@
 				<input value="0.05" class="numBox" type="text" id="volumeFac" name="fText">
 				<label> Volume </label>
 				<br>
+				<button type="button" class="setButton" id="blurSet">Set</button>
+				<button type="button" class="setButton" id="blurGet">Get</button>
+				<button type="button" class="setButton" id="blurAvg">G.Avg</button>
+				<input value="1" class="numBox" type="text" id="blurNum" name="fText">
+				<button type="button" class="mathButton" id="blurDiv">/=</button>
+				<button type="button" class="mathButton" id="blurSub">-=</button>
+				<button type="button" class="mathButton" id="blurAdd">+=</button>
+				<button type="button" class="mathButton" id="blurMul">*=</button>
+				<input value="2" class="numBox" type="text" id="blurFac" name="fText">
+				<label> Blur Mult </label>
+				<br>
 				<button type="button" class="setButton" id="allSet">All</button>
 				<button type="button" class="setButton" id="allGet">All</button>
 				<button type="button" class="setButton" id="allAvg">All</button>
 				<input value="1x" class="numBox" type="text" id="repeatNum" name="fText">
-				<button type="button" class="setButton" id="makeRule">Make</button>
+				<button type="button" class="otherButton" id="makeRule">Make New Rule</button>
 				<br>
 				<br>
 				<button type="button" class="setButton" id="labelSet">Set</button>
@@ -225,6 +220,24 @@
 				<button type="button" class="setButton" id="expBlurSet">Set</button>
 				<input value="256" class="numBox" type="text" id="expBlur" name="fText">
 				<label> Blur length (in samples) </label>
+				<br>
+			</div>
+			<div id="viewSettingsHolder" hidden>
+				<input value="1024" class="numBox" type="text" id="sppNum" name="fText">
+				<button type="button" class="mathButton" id="sppDiv">/=</button>
+				<button type="button" class="mathButton" id="sppSub">-=</button>
+				<button type="button" class="mathButton" id="sppAdd">+=</button>
+				<button type="button" class="mathButton" id="sppMul">*=</button>
+				<input value="4" class="numBox" type="text" id="sppFac" name="fText">
+				<label> Samples/Px </label>
+				<br>
+				<input value="0" class="numBox" type="text" id="offsetNum" name="fText">
+				<button type="button" class="mathButton" id="offsetDiv">/=</button>
+				<button type="button" class="mathButton" id="offsetSub">-=</button>
+				<button type="button" class="mathButton" id="offsetAdd">+=</button>
+				<button type="button" class="mathButton" id="offsetMul">*=</button>
+				<input value="1" class="numBox" type="text" id="offsetFac" name="fText">
+				<label> Offset (sec) </label>
 				<br>
 			</div>
 		</div>

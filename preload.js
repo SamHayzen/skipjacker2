@@ -32,7 +32,8 @@ const numQuickPatternBoxes = 8;
 
 const tabs = [
 	["varTabButton","variablesHolder"],
-	["expTabButton","exportSettingsHolder"]
+	["expTabButton","exportSettingsHolder"],
+	["viewTabButton","viewSettingsHolder"]
 ];
 
 
@@ -357,6 +358,13 @@ String.prototype.numerics = function(){
 	return this.replace(/[^\d.-]/g,'');
 };
 
+String.prototype.trimChr = function(chr){
+	var ret = this;
+	while(ret.charAt(0)==chr) ret = ret.substring(1);
+    while(ret.charAt(ret.length-1)==chr) ret = ret.substring(0,ret.length-1);
+	return ret;
+}
+
 String.prototype.splice = function(start, delCount, newSubStr) {
 	return this.slice(0, start) + newSubStr + this.slice(start + Math.abs(delCount));
 };// thank you, https://stackoverflow.com/questions/4313841/insert-a-string-at-a-specific-index
@@ -381,11 +389,15 @@ Number.prototype.constr = function(l,h){
 }
 
 Number.prototype.sign = function(n) {
-		if(this){
+	if(this){
 		return this/this.abs();
 	}else{
 		return this;
 	}
+};
+
+Number.prototype.trimChr = function(chr) {
+	return this.toString().trimChr(chr);
 };
 
 Array.prototype.insert = function(index, inary) {
@@ -919,7 +931,7 @@ function skipjack(audio,inRules){
 		holdRule = inRules[i];
 		if(!holdRule.autoLabel) log(">skipjacking "+holdRule.label+"...");
 		holdSamples = new sampleBundle(holdRule.samples);
-		holdSamples.mixSamples(audio,ret,holdRule.start,holdRule.length,holdRule.pattern,holdRule.factor,1);
+		holdSamples.mixSamples(audio,ret,holdRule.start,holdRule.length,holdRule.pattern,holdRule.factor,holdRule.blurMult,1);
 	}
 	log("!Finished skipjacking track");
 	if(exportSet.finalSpeedFactor != 1){
@@ -979,7 +991,7 @@ class sampleBundle{ //like a normal sampleListing, but many of them, with added 
 			offset += this.samples[i].portion; //calculate the starts of all the segments (measured in portion of the whole)
 		}
 	}
-	mixSamples(inSeg,outSeg,start,length,pattern,factor,expectedRatio){ //inSeg is source audio, outSeg is output audio being built.  Start and length are of the rule these samples are of
+	mixSamples(inSeg,outSeg,start,length,pattern,factor,blurMult,expectedRatio){ //inSeg is source audio, outSeg is output audio being built.  Start and length are of the rule these samples are of
 		if(typeof pattern !== 'string'){
 			log("!ERROR! sampleBundle.mixSamples() passed non-string as pattern ("+pattern+")\n$returning empty segment");
 			return [];
@@ -995,12 +1007,12 @@ class sampleBundle{ //like a normal sampleListing, but many of them, with added 
 					if(samples[q].label == labels[i]){//forwards
 						var holdStart = samples[q].offset*length+start; //start of sample
 						var holdLength = samples[q].portion*length; //length of sample
-						holdLeadSeg = new segWithLead(inSeg,holdStart,holdLength,factor);
+						holdLeadSeg = new segWithLead(inSeg,holdStart,holdLength,factor,exportSet.blurLength*blurMult);
 						appendWithBlur(outSeg,holdLeadSeg);
 					}else{//backwards
 						var holdStart = samples[q].offset*length+start; //start of sample
 						var holdLength = samples[q].portion*length; //length of sample
-						holdLeadSeg = new segWithLead(inSeg,holdStart,holdLength*-1,factor);
+						holdLeadSeg = new segWithLead(inSeg,holdStart,holdLength*-1,factor,exportSet.blurLength*blurMult);
 						appendWithBlur(outSeg,holdLeadSeg);
 					}
 					endLength+=samples[q].portion;
@@ -1008,7 +1020,8 @@ class sampleBundle{ //like a normal sampleListing, but many of them, with added 
 				}
 			}
 		}
-		if(truncate(endLength/factor) !== expectedRatio) log("!WARNING! segment sample/playtime ratio does not meet desired ratio\n$"+truncate(endLength/factor)+"/1 vs "+expectedRatio+"/1");
+		if(truncate(endLength/factor) !== expectedRatio) return true; //log("!WARNING! segment sample/playtime ratio does not meet desired ratio\n$"+truncate(endLength/factor)+"/1 vs "+expectedRatio+"/1");
+		return false;//return true if playback time is not right
 	}
 }
 
@@ -1057,6 +1070,7 @@ class rule {
 		this.samples = samples;
 		this.pattern = pattern;
 		this.factor = factor;
+		this.blurMult = 1;
 		this.autoLabel = true;
 		this.label = "#0";
 		this.r = 255;
@@ -1389,8 +1403,7 @@ class canvasRenderer {
 			return;
 		}
 		
-		
-		if(holdRule.end > this.lastStart || this.start < this.lastEnd){
+		if(holdRule.end > this.lastStart && holdRule.start < this.lastEnd){
 			ruleWidth = r(holdRule.length/this.lastSpp); //find the width to render
 			leftEdge = r((holdRule.start-this.lastStart)/this.lastSpp);
 			rightEdge = leftEdge + ruleWidth;
@@ -1399,15 +1412,12 @@ class canvasRenderer {
 			ctx.strokeStyle = col.toHexcode();
 			ctx.fillRect(leftEdge,0,ruleWidth,ruleHeadspace);
 			ctx.lineWidth = 2;
+			/*  //left edge
 			ctx.beginPath();
 			ctx.moveTo(leftEdge+1,ruleHeadspace);
 			ctx.lineTo(leftEdge+1,ruleHeadspace+this.getWaveHeight());
 			ctx.stroke();
-			ctx.fillRect(leftEdge,ruleHeadspace+this.getWaveHeight(),ruleWidth,ruleBottomspace);
-			ctx.beginPath();
-			ctx.moveTo(rightEdge-1,ruleHeadspace+this.getWaveHeight());
-			ctx.lineTo(rightEdge-1,ruleHeadspace);
-			ctx.stroke();
+			*/
 			ctx.lineWidth = 1;
 			
 			//draw rule stats
@@ -1416,9 +1426,9 @@ class canvasRenderer {
 			ctx.font = "bold "+(canvasFontSize/2)+"px lucida console";
 			say = "#"+index;
 			if(say.estWidth(canvasFontSize/2) < ruleWidth-19) ctx.fillText(say, leftEdge+2, 12); //only render if it can fit
-			say = "S: "+truncate(holdRule.start/inWAV.getSampleRate()).pad(6,'0',true)+" █F: "+truncate(holdRule.factor);
+			say = "B:"+truncate(holdRule.blurMult).pad(5,' ',true)+"█F:"+truncate(holdRule.factor);
 			if(say.estWidth(canvasFontSize/2) < ruleWidth-19) ctx.fillText(say, leftEdge+2, 24); //only render if it can fit
-			say = "L: "+truncate(holdRule.length/inWAV.getSampleRate()).pad(6,'0',true)+" █V: "+truncate(holdRule.volume);
+			say = "L:"+truncate(holdRule.length/inWAV.getSampleRate()).pad(5,' ',true)+"█V:"+truncate(holdRule.volume);
 			if(say.estWidth(canvasFontSize/2) < ruleWidth-19) ctx.fillText(say, leftEdge+2, 36); //only render if it can fit
 			
 			
@@ -1430,29 +1440,31 @@ class canvasRenderer {
 			ctx.textAlign = "center";
 			ctx.font = "bold "+canvasFontSize+"px lucida console";
 			
-			holdLeft = leftEdge+2;
+			holdLeft = leftEdge;
 			innerWidth = ruleWidth-4;
-			for(var i = 0; i < holdRule.samples.length; i++){ //rendering the samples
-				if(i.mod(2) == 0){ col2.mult(0.8);
-				}else{ col2.mult(1/0.8); }
-				col3 = new color(col2);
-				col3.inv(); //col3 is just col2 but inverted
-				ctx.fillStyle = col2.toHex();
-				holdNum = holdRule.samples[i].portion*innerWidth;
-				
-				ctx.fillRect(holdLeft,ruleHeadspace-ruleSampleLabelSpace,holdNum,ruleSampleLabelSpace); //draw the label box
-				
-				ctx.fillStyle = col3.toHex()
-				if(holdRule.samples[i].label.estWidth() < holdNum) ctx.fillText(holdRule.samples[i].label, holdLeft+holdNum/2, ruleHeadspace-1); //only render if it can fit
-				
-				
-				//if(i !== 0){ //if it's not the first sample, draw a thin vertical line
-					col3 = new color(col2)
-					col3.r = 255;
-					ctx.fillStyle = col3;
-					ctx.vLine(holdLeft,ruleHeadspace+1,this.getWaveHeight());
-				//}
-				holdLeft += holdNum; //advance to the right
+			if(innerWidth >= 6){
+				for(var i = 0; i < holdRule.samples.length; i++){ //rendering the samples
+					if(i.mod(2) == 0){ col2.mult(0.8);
+					}else{ col2.mult(1/0.8); }
+					col3 = new color(col2);
+					col3.inv(); //col3 is just col2 but inverted
+					ctx.fillStyle = col2.toHex();
+					holdNum = holdRule.samples[i].portion*ruleWidth;
+					
+					ctx.fillRect(holdLeft,ruleHeadspace-ruleSampleLabelSpace,holdNum,ruleSampleLabelSpace); //draw the label box
+					
+					ctx.fillStyle = col3.toHex()
+					if(holdRule.samples[i].label.estWidth() < holdNum) ctx.fillText(holdRule.samples[i].label, holdLeft+holdNum/2, ruleHeadspace-1); //only render if it can fit
+					
+					
+					if(i !== 0){ //if it's not the first sample, draw a thin vertical line
+						col3 = new color(col2)
+						col3.r = 255;
+						ctx.fillStyle = col3;
+						ctx.vLine(holdLeft-1,ruleHeadspace+1,this.getWaveHeight());
+					}
+					holdLeft += r(holdNum); //advance to the right
+				}
 			}
 			col2 = new color(col); //copy the color
 			//col2.r = 255;//red as can be
@@ -1460,26 +1472,32 @@ class canvasRenderer {
 			
 			ctx.font = "bold "+(canvasFontSize-4)+"px lucida console";
 			
-			holdLeft = leftEdge+2;
+			holdLeft = leftEdge;
 			
 			holdLabels = holdRule.pattern.split(""); //render the pattern
+			if(innerWidth < 6) {
+				ctx.fillStyle = col.x();
+				ctx.fillRect(holdLeft,ruleHeadspace+this.getWaveHeight()+1,ruleWidth+1,ruleBottomspace-1); //if the patterns are too small to draw, make it a blank rect
+			}
 			for(var i = 0; i < holdLabels.length; i++){
 				if(i.mod(2) == 0){ col2.mult(0.8);
 				}else{ col2.mult(1/0.8); }
 				
 				holdSample = holdRule.getSampleByLabel(holdLabels[i]);
 				if(holdSample){
-					holdNum = holdSample.portion*innerWidth/(holdRule.factor*exportSet.finalSpeedFactor);
+					holdNum = holdSample.portion*ruleWidth/(holdRule.factor*exportSet.finalSpeedFactor);
 					ctx.fillStyle = col2.x();
 				}else{
-					holdNum = holdRule.samples[0].portion*innerWidth/(holdRule.factor*exportSet.finalSpeedFactor); //uh oh, this sample isn't listed, default to the first sample and hope it exists;
+					holdNum = holdRule.samples[0].portion*ruleWidth/(holdRule.factor*exportSet.finalSpeedFactor); //uh oh, this sample isn't listed, default to the first sample and hope it exists;
 					drawWarning(ctx,holdLeft+holdNum/2,ruleHeadspace+this.getWaveHeight()-9);
 					ctx.fillStyle = col2.rand(0.75,true);
 				}
-				ctx.fillRect(holdLeft,ruleHeadspace+this.getWaveHeight()+1,holdNum,ruleBottomspace-1); //draw the pattern sample label box
-				
-				ctx.fillStyle = col2.inv(true);
-				if(holdLabels[i].estWidth() < holdNum) ctx.fillText(holdLabels[i], holdLeft+holdNum/2, ruleHeadspace+this.getWaveHeight()+ruleBottomspace-7); //only render if it can fit
+				if(innerWidth >= 6){
+					ctx.fillRect(holdLeft,ruleHeadspace+this.getWaveHeight()+1,holdNum,ruleBottomspace-1); //draw the pattern sample label box
+					
+					ctx.fillStyle = col2.inv(true);
+					if(holdLabels[i].estWidth() < holdNum) ctx.fillText(holdLabels[i], holdLeft+holdNum/2, ruleHeadspace+this.getWaveHeight()+ruleBottomspace-7); //only render if it can fit
+				}
 				holdLeft+=holdNum;
 			}
 			if(holdLeft > rightEdge){drawWarning(ctx,rightEdge-9,9);}
@@ -1492,11 +1510,16 @@ class canvasRenderer {
 			
 			//grabber/dragger
 			col3 = new color(1);
-			if(!(selected && selection.isContinuous())){
+			if(!(selected && selection.isContinuous()) && innerWidth >= 8){
 				ctx.fillStyle = col3.mult(64,true);
 				ctx.strokeStyle = col3.mult(128);
 				ctx.fillRect(leftEdge+6,ruleHeadspace-ruleSampleLabelSpace-ruleDraggerSpace*0.75,innerWidth-8,ruleDraggerSpace/2);
 				ctx.strokeRect(leftEdge+6,ruleHeadspace-ruleSampleLabelSpace-ruleDraggerSpace*0.75,innerWidth-8,ruleDraggerSpace/2);
+			}
+			
+			if(ruleWidth >= 4){ //right side edge line
+				ctx.fillStyle = new color(0);
+				ctx.vLine(rightEdge-1,0,this.getHeight()-measureBottomspace);
 			}
 		}else{
 			//the rule is out of frame, what do you want?
@@ -1842,6 +1865,33 @@ function getVolumeAvg(){
 	return 1;
 }
 
+function setBlur(blurMult){
+	blurMult = forceNum(blurMult);
+	var holdRules = selection.getAllSelectedRules();
+	for(var i = 0; i < holdRules.length; i++) holdRules[i].blurMult = blurMult;
+	bakeRuleArrayPositions(rules);
+	renderRules();
+}
+
+function getBlur(){
+	var holdRule = selection.getFirstRule();
+	if(holdRule !== undefined) return holdRule.blurMult;
+	log("!nothing selected\$returning 1");
+	return 1;
+}
+
+function getBlurAvg(){
+	var holdRules = selection.getAllSelectedRules();
+	var holdVal;
+	if(holdRules.length){
+		holdVal = 0;
+		for(var i = 0; i < holdRules.length; i++) holdVal+=holdRules[i].blurMult;
+		return r(holdVal/holdRules.length);
+	}
+	log("!nothing selected\$returning 1");
+	return 1;
+}
+
 function selectRuleUnderCursor(){
 	holdVal = project.getRuleIndexByStartPos(mouse.overSampleRaw);
 	if(holdVal > -1){
@@ -1967,6 +2017,7 @@ function getAllProps(){
 	document.getElementById('lengthNum').value = getLength();
 	document.getElementById('factorNum').value = getFactor();
 	document.getElementById('volumeNum').value = getVolume();
+	document.getElementById('volumeNum').value = getBlur();
 	return false;
 }
 
@@ -1977,6 +2028,7 @@ function setAllProps(){
 	setLength(document.getElementById('lengthNum').value);
 	setFactor(document.getElementById('factorNum').value);
 	setVolume(document.getElementById('volumeNum').value);
+	setBlur(document.getElementById('blurNum').value);
 	return false;
 }
 
@@ -1984,6 +2036,7 @@ function getAllPropsAvg(){
 	document.getElementById('lengthNum').value = getLengthAvg();
 	document.getElementById('factorNum').value = getLengthAvg();
 	document.getElementById('volumeNum').value = getVolumeAvg();
+	document.getElementById('blurNum').value = getBlurAvg();
 	return false;
 }
 
@@ -2524,6 +2577,41 @@ window.addEventListener('DOMContentLoaded', () => {
 	document.getElementById('volumeMul').addEventListener("click", function(){
 		holdObj = document.getElementById('volumeNum');
 		holdVal = pFloat(document.getElementById('volumeFac').value);
+		holdVal = pFloat(holdObj.value)*holdVal;
+		holdObj.value = truncate(holdVal);
+	});
+	
+	//Blur
+	document.getElementById('blurGet').addEventListener("click", function(){
+		document.getElementById('blurNum').value = getBlur();
+	});
+	document.getElementById('blurSet').addEventListener("click", function(){
+		setBlur(document.getElementById('blurNum').value);
+	});
+	document.getElementById('blurAvg').addEventListener("click", function(){
+		document.getElementById('blurNum').value = getBlurAvg();
+	});
+	document.getElementById('blurDiv').addEventListener("click", function(){
+		holdObj = document.getElementById('blurNum');
+		holdVal = pFloat(document.getElementById('blurFac').value);
+		holdVal = pFloat(holdObj.value)/holdVal;
+		holdObj.value = truncate(holdVal);
+	});
+	document.getElementById('blurSub').addEventListener("click", function(){
+		holdObj = document.getElementById('blurNum');
+		holdVal = pFloat(document.getElementById('blurFac').value);
+		holdVal = pFloat(holdObj.value)-holdVal;
+		holdObj.value = truncate(holdVal);
+	});
+	document.getElementById('blurAdd').addEventListener("click", function(){
+		holdObj = document.getElementById('blurNum');
+		holdVal = pFloat(document.getElementById('blurFac').value);
+		holdVal = pFloat(holdObj.value)+holdVal;
+		holdObj.value = truncate(holdVal);
+	});
+	document.getElementById('blurMul').addEventListener("click", function(){
+		holdObj = document.getElementById('blurNum');
+		holdVal = pFloat(document.getElementById('blurFac').value);
 		holdVal = pFloat(holdObj.value)*holdVal;
 		holdObj.value = truncate(holdVal);
 	});
