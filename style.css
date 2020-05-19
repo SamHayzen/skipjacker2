@@ -1,7 +1,7 @@
 #canvHolder {
 	border-style: double;
 	position: relative;
-	height:424px;
+	height:300px;
 	background-color: #E0E0E0;
 }
 #waveformCanvas {
@@ -12,7 +12,7 @@
 }
 .mainCanvas {
 	position: absolute;
-	height:424;
+	height:300;
 	left: 0;
 	top: 0;
 }
@@ -46,6 +46,10 @@
 #tabsHolder {
 	border-style: solid;
 	margin-left: -4px;
+	width: 460px;
+}
+#tracksHolder {
+	border-style: solid;
 }
 .numBox {
 	width: 56px;

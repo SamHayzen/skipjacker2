@@ -20,6 +20,7 @@
     "electron": "^8.2.0"
   },
   "dependencies": {
+    "electron-packager": "^14.2.1",
     "mousetrap": "^1.6.5",
     "mp3-to-wav": "^0.1.11",
     "node-lame": "^1.2.2",

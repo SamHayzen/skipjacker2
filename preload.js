@@ -2,24 +2,32 @@ const fs = require('fs');
 const Mousetrap = require('mousetrap');
 const player = require('node-wav-player');
 const { dialog } = require('electron').remote;
+
 var ctx;
 var canvas, canvas2;
-var project;
+var currentTrack;
+var tracks = [];
+var trackStack = []; //isn't that fun to say?  A shitcodelet which that records which track you're on in case it needs to change internally for a moment
+var currentTrackNum = 0;
 var waveCan;
 var logBox = false;
+var rules = [];
+var selection = [];
+var clipboard = [];
+var playingAudio = false;
+var exportSet = {};
+
 var rendSet = { 	//render settings, for the canvas
 	start: 0, 		//first start render
 	spp: 1024,	 	//samples per pixel
-	rsr: 1024,	 	//render sample ratio
-	viewingChan: -1 //specific channel being looked at
+	rsr: 64,	 	//render sample ratio
+	viewingChan: -1,//specific channel being looked at
+	selectStart: 0, //selection within the ruler/compass
+	selectLength: 44100,
+	rulerInterval:1 //measured in seconds
 };
-var exportSet = {		      	//export settings
-	smoothingRate: 64,        	//how many samples to smooth
-	depoppingSensitivity: 256,
-	finalSpeedFactor: 1,
-	blurLength: 256, 		  	//measured in samples
-	invertReverses: false
-};
+
+var mouse = { x: -1, y: -1 , lx: -1, ly: -1, m1: false, overSample: -1, selecting: false};
 
 const ruleSampleLabelSpace = 18; //how much vertical space to give to sample labels
 const ruleDraggerSpace = 18; //how much vertical space to give to the dragging tool
@@ -30,19 +38,29 @@ const canvasFontSize = 24;
 
 const numQuickPatternBoxes = 8;
 
-const tabs = [
+const tabs = [ //array of arrays.  First entry in sub-array is a tab's button, and the second is its div.  Used by tab-switching code
+	["fileTabButton","fileBoxesHolder"],
 	["varTabButton","variablesHolder"],
 	["expTabButton","exportSettingsHolder"],
 	["viewTabButton","viewSettingsHolder"]
+];
+
+const trackSettingsList = [ //button ID, textbox ID, array of children of trackClass object to find setting value.  Yes, it's a little jank, but it works (probably).  
+	["expFacSet","expFac",["exportSet","finalSpeedFactor"]], //final speed factor
+	["expVolSet","expVol",["exportSet","volume"]], //final volume mult
+	["expSewSet","expSew",["exportSet","smoothingRate"]], //smoothing rate (I don't even remember what this does
+	["expBlurSet","expBlur",["exportSet","blurLength"]], //smoothing rate (I don't even remember what this does
+	["expBlurSet","expBlur",["exportSet","blurLength"]], //smoothing rate (I don't even remember what this does
+	["expNameSet","expName",["props","name"]], //smoothing rate (I don't even remember what this does
 ];
 
 
 
 
 
-//███████████████████████████████████████████//PROJECT CLASS//███████████████████████████████████████████//
+//███████████████████████████████████████████//TRACK CLASS//███████████████████████████████████████████//
 
-class projectClass{
+class trackClass{
 	constructor(){
 		this.WAVFile = new WAVFile();
 		this.rules = [];
@@ -50,6 +68,58 @@ class projectClass{
 		this.maxHistorySize = 32;
 		this.historyPosition = 0;
 		this.selection = new selectionClass(this.rules);
+		this.exportSet = new makeExportSet();
+		this.props = { //only primitives in this object, please
+			name:"Untitled", 
+			WAVPath:"",
+			rulePath:"",
+			skipjacked: true
+		}
+	}
+	loadWAV(inFile){
+		if(typeof inFile !== 'string'){
+			log("!ERROR! trackClass.loadWAV() passed non-string as file path ("+inFile+")");
+			return;
+		}
+		try{
+			log(">Looking for preformatted JSON file");
+			if(fs.existsSync(inFile+".json")){
+				log("!Found prefomatted JSON audio file");
+				log(">Opening JSON file \""+inFile+".JSON\"...");
+				this.WAVFile.copyFrom(new WAVFile());
+				this.WAVFile.loadFromJSON(inFile+".JSON");
+			}else{
+				log("!No preformatted JSON file of audio detected");
+				log(">Opening source WAV file \""+inFile+"\"...");
+				
+				this.WAVFile.copyFrom(new WAVFile(fileToUint8Array(inFile)));
+				log(">Saving audio data to .JSON for faster future access...");
+				this.WAVFile.saveToJSON(inFile+".JSON");
+				log("!Saving preformatted JSON as "+inFile+".JSON in the background");
+			}
+			log("!Done fetching audio data");
+			outWAV.copyHeader(this.WAVFile);
+			outWAV.updateSizeInHeaderToReflectData();
+			this.selection.clear();
+			this.props.WAVPath = inFile;
+		}catch(e){
+			log("!ERROR! Failed loading file");
+			log("$more information sent to console (crtl+shift+i");
+			console.error(e);
+		}
+	}
+	loadRules(inFile){
+		try{
+			if(inFile.toLowerCase().indexOf(".rule") == -1) log("!WARNING! Loaded file does not have a '.rule' file extension");
+			this.rules = loadRulesFromFile(inFile); //gotta update these pointers
+			this.selection.rules = this.rules;
+			log("!File "+inFile+" loaded");
+			this.selection.clear(); //don't want to be selecting a rule that doesn't exist anymore
+		}catch(e){
+			log("!ERROR! Failed loading file");
+			log("$more information sent to console (crtl+shift+i");
+			console.error(e);
+		}
 	}
 	addRule(inRule,pos){
 		if(isNotNum(pos)) pos = this.rules.length;
@@ -112,13 +182,43 @@ class projectClass{
 		this.ruleHistoryStack[this.historyPosition-1] = holdRules;
 		return true;
 	}
+	getRulesInRange(start,end){ //pass it a range within the wav array measured in samples
+		if(start > end){
+			var hold = end;
+			end = start;
+			start = hold; //flip 'em
+		}
+		var ret = [];
+		for(var i = 0; i < this.rules.length; i++){
+			if((this.rules[i].start >= start && this.rules[i].start <= end) || (this.rules[i].end >= start && this.rules[i].end <= end) || (this.rules[i].end >= start && this.rules[i].start <= start)){
+				ret.push(this.rules[i]); //if either the start or the end of the rule is between start and end, add it
+			}
+		}
+		return ret;
+	}
+	getAudioSection(start,end,jack){
+		if(jack == undefined) jack = true; //skipjack the section
+		if(start > end){
+			var hold = end;
+			end = start;
+			start = hold; //flip 'em
+		}
+		if(jack && this.props.skipjacked){
+			var holdRules = this.getRulesInRange(start,end);
+			var startTrim = start-holdRules[0].start, retLength = end - start;
+			log(this.exportSet.finalSpeedFactor);
+			return getSegmentSection(skipjack(this.WAVFile.data, holdRules, this.exportSet.finalSpeedFactor), startTrim/this.exportSet.finalSpeedFactor, retLength/this.exportSet.finalSpeedFactor, this.exportSet.volume);
+		}else{
+			return speedSegment(getSegmentSection(this.WAVFile.data, start, end-start, this.exportSet.volume), this.exportSet.finalSpeedFactor);
+		}
+	}
 }
 
 
 class selectionClass{
 	constructor(rules){
 		this.indexes = [];
-		this.rules = rules; //this holds a pointer to the rules arrayobject of its parent projectClass to for calculation reasons.
+		this.rules = rules; //this holds a pointer to the rules arrayobject of its parent trackClass to for calculation reasons.
 	}
 	getStart(){
 		if(this.indexes.length) return this.rules[this.indexes[0]].start;
@@ -153,7 +253,7 @@ class selectionClass{
 		for(var i = 0; i < this.indexes.length; i++) ret.push(this.rules[this.indexes[i]]);
 		return ret;
 	}
-	ruleAdded(index){//call this when a rule is added to the rules list in the project object to ensure continuity
+	ruleAdded(index){//call this when a rule is added to the rules list in the track object to ensure continuity
 		for(var i = 0; i < this.indexes.length; i++) if(index<=this.indexes[i]) this.indexes[i]++; //shift up
 	}
 	ruleRemoved(index){
@@ -173,6 +273,7 @@ class selectionClass{
 		return 0;
 	}
 	selectRange(start,end){ //pass it a range within the rules[] array
+		if(this.rules.length == 0) return;
 		if(start > end){
 			var hold = end;
 			end = start;
@@ -186,6 +287,7 @@ class selectionClass{
 			log("!ERROR! selection.selectRange() was passed an invalid range (["+start+","+end+"] of [0,"+this.rules.lastIndex()+"])");
 		}
 	}
+	deselectAll(){ this.indexes = []; }
 	deselect(index){
 		for(var i = 0; i<this.indexes.length; i++) if(this.indexes[i] == index){ this.indexes.splice(i,1); return true;}
 		return false;
@@ -228,8 +330,21 @@ class selectionClass{
 		}
 		return -1;
 	}
+	matchMeasureSelectionToRuleSelection(){
+		if(this.getLength() == -1 || this.getStart() == -1) return;
+		rendSet.selectStart = this.getStart();
+		rendSet.selectLength = this.getLength();
+	}
 }
 
+function makeExportSet(){		      	//export settings
+	this.smoothingRate = 64;        	//how many samples to smooth
+	this.depoppingSensitivity = 256;
+	this.finalSpeedFactor = 1;
+	this.blurLength = 256; 		  	//measured in samples
+	this.invertReverses = false;
+	this.volume = 1;
+};
 
 function cloneRulesArray(inAry){
 	var ret = [];
@@ -250,7 +365,7 @@ function loadRulesFromFile(fileName){
 
 
 //███████████████████████████████████████████//SKIPJACKER VARIABLES//███████████████████████████████████████████//
-
+//these are scarcely used -- ported over from Skipjacker 1 to make sure nothing breaks
 var lastAbsolute = 0;
 var lastShift = 0;
 var desiredRatio = 1;
@@ -261,13 +376,6 @@ var exportSampleRate = 0;
 var sampleCoefficient = 1;
 var quiet = false;
 
-var inWAV, outWAV;
-var inWav = inWAV, outWav = outWAV; //I keep misspelling this and bricking the program, so I'll just be lazy and define both
-
-var rules;
-var selection;
-var clipboard = [];
-var playingAudio = false;
 
 var holdObj, holdVal, holdVal2, holdIndex;
 
@@ -278,9 +386,86 @@ var holdObj, holdVal, holdVal2, holdIndex;
 
 
 
-//███████████████████████████████████████████//GENERAL FUNCTIONS//███████████████████████████████████████████//
+//███████████████████████████████████████████//MULTITRACKING CODE//███████████████████████████████████████████//
 
-var mouse = { x: -1, y: -1 , lx: -1, ly: -1, m1: false, overSample: -1, selecting: false};
+function changeTracks(num,noRend){
+	if(num >= tracks.length || isNotNum(num) || num < 0){
+		log("!ERROR! changeTracks() passed invalid track number ("+num+" out of "+tracks.length+")");
+		return false;
+	}
+	var holdTrack = tracks[num];
+	currentTrack = holdTrack;
+	inWAV = holdTrack.WAVFile;
+	rules = holdTrack.rules;
+	selection = holdTrack.selection;
+	exportSet = holdTrack.exportSet;
+	currentTrackNum = num;
+	if(!noRend){
+		renderAll();
+		refreshTracksBox();
+	}
+	return true;
+}
+
+function newTrack(){
+	var holdPos = tracks.length;
+	tracks.push(new trackClass());
+	bakeRuleArrayPositions(tracks[holdPos].rules);
+	refreshTracksBox();
+	return holdPos;
+}
+
+function refreshTracksBox(){
+	var say = "";
+	var say2 = "";
+	for(var i = 0; i < tracks.length; i++){
+		say2 = (i == currentTrackNum) ? "disabled" : "";
+		say = say+("<button type=\"button\" class=\"tabButton\" "+say2+" id=\"track"+i+"\">"+tracks[i].props.name+"</button>\n");
+	}
+	say = say+("<button type=\"button\" class=\"tabButton\" id=\"addTrack\">+</button>\n");
+	document.getElementById('tracksHolder').innerHTML = say;
+	for(var i = 0; i < tracks.length; i++){
+		document.getElementById("track"+i).addEventListener("click", function(e){
+			var trackNum = pFloat(e.toElement.id.numerics());//get the track num
+			changeTracks(trackNum);
+		});
+	}
+	document.getElementById("addTrack").addEventListener("click", function(e){
+		newTrack();
+	});
+}
+
+function pushTrack(){ tracks.push(currentTrackNum); };
+
+function popTrack(noRend) {
+	currentTrackNum = tracks.pop();
+	if(!noRend){
+		renderAll();
+		refreshTracksBox();
+	}
+};
+
+function getFinalSegment(start,end){ //get a segment of all tracks mixed together
+	var holdSegs = [];
+	for(var t = 0; t < tracks.length; t++) holdSegs.push(tracks[t].getAudioSection(start,end,true));
+	return mixSegments(holdSegs);
+}
+
+function getFinalFullAudio(){ //get all tracks tracks mixed together
+	var holdEnd = 1;
+	for(var t = 0; t < tracks.length; t++) if(tracks[t].WAVFile.data[0].length > holdEnd) holdEnd = tracks[t].WAVFile.data[0].length;
+	return getFinalSegment(0,holdEnd); //get the whole dang thing
+}
+
+
+
+
+
+
+
+
+
+//███████████████████████████████████████████//GENERAL FUNCTIONS//███████████████████████████████████████████//
 
 function log(text){
 	if(logBox){
@@ -439,7 +624,19 @@ function round(num){//just makes things easier
 	return Math.round(num);
 };
 
+function vRound(num,base){ //I forget what the 'v' stands for.  I think it's "Variable Round"
+	return Math.round(num/base)*base;
+}
+
+function vFloor(num,base){ //Yep, definitely "variable", as in "variable definition" or whatever
+	return Math.floor(num/base)*base;
+}
+
 const r = round; //even easier
+
+const vr = vRound;
+
+const vf = vFloor;
 
 const pow = Math.pow;
 
@@ -598,11 +795,11 @@ function getSegmentSection(segment, start, length, vol){//measured in samples
 	return holdSeg;
 }
 
-function generateSilentSegment(length, sampleRate, numChannels){
+function generateSilentSegment(length, numChannels){
 	if(typeof numChannels !== 'number') numChannels = 1;
 	var ret = [];
 	for(var i = 0; i<numChannels; i++) ret.push([]); //add a channel
-	var numSamples = round(length*sampleRate);
+	var numSamples = round(length);
 	for(var i = 0; i < numSamples; i++){
 		for(var k = 0; k<numChannels; k++){
 			ret[k].push(0);
@@ -790,10 +987,39 @@ function appendWithBlur(seg,tailSeg){ //should be passed a segment (2d float arr
 	}
 }
 
+function mixSegments(inSegs){ //should be passed an array of segments
+	if(typeof inSegs !== 'object' || inSegs.length == 0){
+		log("!ERROR! mixSegments() passed non-segment-array");
+		return [[]];
+	}
+	var length = 0;
+	for(var i = 0; i < inSegs.length; i++) if(inSegs[i][0].length > length) length = inSegs[i][0].length; //get length of longest segment
+	var numChan = 1;
+	for(var i = 0; i < inSegs.length; i++) if(inSegs[i].length > numChan) numChan = inSegs[i].length; //get channels of widest segment
+	var ret = generateSilentSegment(length,numChan); //initialize ret
+	
+	var mono = false;
+	for(var s = 0; s < inSegs.length; s++){ //for every segment
+		mono = false;
+		if(inSegs[s].length == 1) mono = true; //if it only has one channel
+		for(var k = 0; k < numChan; k++){ //for every channel
+			for(var i = 0; i < inSegs[s][k].length; i++){ //for every sample
+				if(mono){
+					ret[k][i] += inSegs[s][0][i]; //add it to the output
+				}else{
+					ret[k][i] += inSegs[s][k][i]; //add it to the output
+				}
+			}
+		}
+	}
+	return ret;
+}
+
 class segWithLead { //basically just two segments, with the first being the main segment, and the second being a small segment leading into it
-	constructor(segment, start, length, factor, blurLength){ //pass it a source segment, the start & length of the section you want to take, and how long the leadin should be.
+	constructor(segment, start, length, factor, blurLength, volume){ //pass it a source segment, the start & length of the section you want to take, and how long the leadin should be.
 		if(isNotNum(blurLength)) blurLength = exportSet.blurLength; //get default if undef
 		if(isNotNum(factor)) factor = 1; //default to 1
+		if(isNotNum(volume)) volume = 1; //default to 1
 		if(isNum(length)){ //if passed (most) all arguments
 			var reversed = false;
 			
@@ -807,7 +1033,7 @@ class segWithLead { //basically just two segments, with the first being the main
 			}
 			this.data = [];
 			this.leadin = [];
-			this.data = speedSegment(getSegmentSection(segment,start,length),factor); //get the data
+			this.data = speedSegment(getSegmentSection(segment,start,length,volume),factor); //get the data
 			if(!reversed){
 				this.leadin = speedSegment(getSegmentSection(segment, start-blurLength*factor, blurLength*factor),factor); //get the leadin
 			}else{
@@ -909,6 +1135,7 @@ class WAVFile {
 	}
 };
 
+var outWAV = new WAVFile();
 
 
 
@@ -923,7 +1150,8 @@ class WAVFile {
 
 //███████████████████████████████████████████//SKIPJACKER SECTION//███████████████████████████████████████████//
 
-function skipjack(audio,inRules){
+function skipjack(audio,inRules,factorMult){
+	if(isNotNum(factorMult)) factorMult = 1;
 	var ret = generateEmptySegment(audio.length);
 	var holdRule;
 	var holdSamples;
@@ -931,12 +1159,11 @@ function skipjack(audio,inRules){
 		holdRule = inRules[i];
 		if(!holdRule.autoLabel) log(">skipjacking "+holdRule.label+"...");
 		holdSamples = new sampleBundle(holdRule.samples);
-		holdSamples.mixSamples(audio,ret,holdRule.start,holdRule.length,holdRule.pattern,holdRule.factor,holdRule.blurMult,1);
+		holdSamples.mixSamples(audio,ret,holdRule.start,holdRule.length,holdRule.pattern,holdRule.factor,holdRule.blurMult,holdRule.volume,1,factorMult);
 	}
 	log("!Finished skipjacking track");
-	if(exportSet.finalSpeedFactor != 1){
-		log(">Speed adjusting final track...");
-		ret = speedSegment(ret,exportSet.finalSpeedFactor);
+	if(factorMult != 1){
+		log("!Segment has been speed adjusted by "+factorMult);
 	}
 	log("$Final track playtime is "+calcPlayTime(ret,inWAV.getSampleRate())+" sec");
 	return ret;
@@ -991,11 +1218,12 @@ class sampleBundle{ //like a normal sampleListing, but many of them, with added 
 			offset += this.samples[i].portion; //calculate the starts of all the segments (measured in portion of the whole)
 		}
 	}
-	mixSamples(inSeg,outSeg,start,length,pattern,factor,blurMult,expectedRatio){ //inSeg is source audio, outSeg is output audio being built.  Start and length are of the rule these samples are of
+	mixSamples(inSeg,outSeg,start,length,pattern,factor,blurMult,volume,expectedRatio,factorMult){ //inSeg is source audio, outSeg is output audio being built.  Start and length are of the rule these samples are of
 		if(typeof pattern !== 'string'){
 			log("!ERROR! sampleBundle.mixSamples() passed non-string as pattern ("+pattern+")\n$returning empty segment");
 			return [];
 		}
+		if(isNotNum(factorMult)) factorMult = 1;
 		var samples = this.samples;
 		var numChan = inSeg.length; //get num channels
 		var labels = pattern.split("");
@@ -1007,12 +1235,12 @@ class sampleBundle{ //like a normal sampleListing, but many of them, with added 
 					if(samples[q].label == labels[i]){//forwards
 						var holdStart = samples[q].offset*length+start; //start of sample
 						var holdLength = samples[q].portion*length; //length of sample
-						holdLeadSeg = new segWithLead(inSeg,holdStart,holdLength,factor,exportSet.blurLength*blurMult);
+						holdLeadSeg = new segWithLead(inSeg,holdStart,holdLength,factor*factorMult,exportSet.blurLength*blurMult,volume);
 						appendWithBlur(outSeg,holdLeadSeg);
 					}else{//backwards
 						var holdStart = samples[q].offset*length+start; //start of sample
 						var holdLength = samples[q].portion*length; //length of sample
-						holdLeadSeg = new segWithLead(inSeg,holdStart,holdLength*-1,factor,exportSet.blurLength*blurMult);
+						holdLeadSeg = new segWithLead(inSeg,holdStart,holdLength*-1,factor*factorMult,exportSet.blurLength*blurMult,volume);
 						appendWithBlur(outSeg,holdLeadSeg);
 					}
 					endLength+=samples[q].portion;
@@ -1320,7 +1548,7 @@ class canvasRenderer {
 					}
 					numH = 0, numL = 0, avgL = 0, avgH = 0, maxL = maxVal, maxH = maxVal*-1, avg = 0, count = 0;
 					sampleStep = 1;
-					if(spp>=24) sampleStep = r(spp/24);
+					if(spp>=rendSet.rsr) sampleStep = r(spp/rendSet.rsr);
 					
 					for(var j = 0; j < spp; j+=sampleStep){
 						holdNum = segment[k+to][i*spp+start+j]; 
@@ -1364,7 +1592,7 @@ class canvasRenderer {
 		this.renderLabels(inRuleArray);
 	}
 	renderLabels(inRuleArray){
-		for(var i = 0; i < inRuleArray.length; i++){
+		for(var i = inRuleArray.length-1; i >= 0; i--){
 			var holdRule = inRuleArray[i];
 			if(holdRule.autoLabel) continue; //the rule has no label
 			
@@ -1546,6 +1774,51 @@ class canvasRenderer {
 		}
 		ctx.lineWidth = 1;
 	}
+	rendRuler(step, sampleRate){//step measured in seconds
+		if(step == 0 || sampleRate == 0) return false;
+		if(isNotNum(interval)){
+			clog("Error: tried to rendRuler() with interval of "+interval);
+		}
+		
+		var interval = step*sampleRate;
+		var drawWidth = interval/this.lastSpp;
+		while(drawWidth < 28){
+			step*=2;
+			interval = step*sampleRate;
+			drawWidth = interval/this.lastSpp;
+		}
+		while(drawWidth > 100){
+			step/=2;
+			interval = step*sampleRate;
+			drawWidth = interval/this.lastSpp;
+		}
+		var ctx = this.wctx;
+		var top = this.getHeight()-measureBottomspace;
+		var offset = (this.lastStart-vf(this.lastStart+interval,interval))/this.lastSpp;
+		var numLines = this.getWidth()/drawWidth; 
+		
+		var firstStep = vf(this.lastStart+interval,interval)/interval;
+		
+		//draw backdrop
+		ctx.fillStyle = new color(128);
+		ctx.fillRect(0,top,this.getWidth(),measureBottomspace);
+		
+		//draw selection
+		ctx.fillStyle = new color(200,128,128);
+		ctx.fillRect((rendSet.selectStart-this.lastStart)/this.lastSpp, top, rendSet.selectLength/this.lastSpp, measureBottomspace);
+		ctx.fillStyle = new color(100,64,64);
+		ctx.vLine((rendSet.selectStart-this.lastStart+rendSet.selectLength/2)/this.lastSpp,top,measureBottomspace);
+		
+		
+		//draw lines
+		ctx.fillStyle = new color(0);
+		ctx.textAlign = "left";
+		for(var i = -1; i <= numLines; i++){
+			ctx.vLine(drawWidth*i-offset,top,measureBottomspace);
+			ctx.fillText(truncate((i+firstStep)*step)+"s",drawWidth*i-offset+2,this.getHeight()-canvasFontSize/8);
+		}
+		return true;
+	}
 	clearWave(){
 		this.wctx.clearRect(0,0,this.getWidth(),this.getHeight());
 	}
@@ -1579,19 +1852,24 @@ class canvasRenderer {
 //███████████████████████████████████████████//RENDER FUNCTIONS//███████████████████████████████████████████//
 
 function renderWAVCanvas(){
-	if(inWAV.getLengthInSegments()){
+	//if(inWAV.getLengthInSegments()){
 		waveCan.renderSound(inWAV.data,rendSet.start*inWAV.getSampleRate(),rendSet.spp,inWAV.getBytesPerSample(),rendSet.viewingChan);
-	}
+		waveCan.rendRuler(rendSet.rulerInterval,inWAV.getSampleRate());
+	//}
+}
+
+function renderRuler(){
+	waveCan.rendRuler(rendSet.rulerInterval,inWAV.getSampleRate());
 }
 
 function renderRules(){
-	if(inWAV.getLengthInSegments()){
+	//if(inWAV.getLengthInSegments()){
 		waveCan.renderRules(rules,selection);
-	}
+	//}
 }
 
 function renderViewStats(){
-	document.getElementById('viewStats').innerHTML = "chan "+rendSet.viewingChan+"█SPP:"+rendSet.spp+"█"+truncate(rendSet.start)+" to "+truncate(rendSet.start+(waveCan.getWidth()*rendSet.spp/inWAV.getSampleRate()))+" sec█mouse @ "+mouse.overSample+" ("+truncate(mouse.overSample/inWAV.getSampleRate())+" sec)█mouse pos: ("+mouse.x+","+mouse.y+")█"+rules.length+" total rules█clipboard has "+clipboard.length+" rules█undo stack: "+project.historyPosition+" -> "+project.ruleHistoryStack.length+"/"+project.maxHistorySize+"█";
+	document.getElementById('viewStats').innerHTML = "chan "+rendSet.viewingChan+"█SPP:"+rendSet.spp+"█measure: "+truncate(rendSet.selectLength/inWAV.getSampleRate())+"sec█mouse @ "+mouse.overSample+" ("+truncate(mouse.overSample/inWAV.getSampleRate())+" sec)█mouse pos: ("+mouse.x+","+mouse.y+")█"+rules.length+" total rules█clipboard has "+clipboard.length+" rules█undo stack: "+currentTrack.historyPosition+" -> "+currentTrack.ruleHistoryStack.length+"/"+currentTrack.maxHistorySize+"█";
 }
 
 function reloadCanvas(){
@@ -1620,35 +1898,9 @@ function loadNewWAVFile(){
 	var inFile = document.getElementById('inPathWAVText').value;
 	//if(inFile.toLowerCase().endsWith(".mp3")) inFile = mp3toWAV(inFile); //convert to WAV
 	
-	try{
-		log(">Looking for preformatted JSON file");
-		if(fs.existsSync(inFile+".json")){
-			log("!Found prefomatted JSON audio file");
-			log(">Opening JSON file \""+inFile+".JSON\"...");
-			inWAV.copyFrom(new WAVFile());
-			inWAV.loadFromJSON(inFile+".JSON");
-			outWAV = new WAVFile();
-		}else{
-			log("!No preformatted JSON file of audio detected");
-			log(">Opening source WAV file \""+inFile+"\"...");
-			
-			inWAV.copyFrom(new WAVFile(fileToUint8Array(inFile)));
-			outWAV = new WAVFile();
-			log(">Saving audio data to .JSON for faster future access...");
-			inWAV.saveToJSON(inFile+".JSON");
-			log("!Saving preformatted JSON as "+inFile+".JSON in the background");
-		}
-		log("!Done fetching audio data");
-		outWAV.copyHeader(inWAV);
-		outWAV.updateSizeInHeaderToReflectData();
-		setOffset(0,true);
-		setSPP(1024);
-		selection.clear();
-	}catch(e){
-		log("!ERROR! Failed loading file");
-		log("$more information sent to console (crtl+shift+i");
-		console.error(e);
-	}
+	currentTrack.loadWAV(inFile);
+	setOffset(0,true);
+	setSPP(1024);
 }
 
 function saveRuleFile(){
@@ -1668,26 +1920,16 @@ function saveRuleFile(){
 function loadRuleFile(){
 	var inFile = document.getElementById('inPathRuleText').value;
 	log(">Loading rule file...");
-	try{
-		if(inFile.toLowerCase().indexOf(".rule") == -1) log("!WARNING! Loaded file does not have a '.rule' file extension");
-		rules = loadRulesFromFile(inFile);
-		selection.rules = rules;
-		project.rules = rules; //gotta update these pointers
-		log("!File "+inFile+" loaded");
-		selection.clear(); //don't want to be selecting a rule that doesn't exist anymore
-		renderRules();
-	}catch(e){
-		log("!ERROR! Failed loading file");
-		log("$more information sent to console (crtl+shift+i");
-		console.error(e);
-	}
+	currentTrack.loadRules(inFile);
+	rules = currentTrack.rules; //update pointers
+	renderRules();
 }
 
 function exportWAV(){
 	var outFile = document.getElementById('outPathWAVText').value;
 	if(inFile.toLowerCase().indexOf(".wav") == -1) log("!WARNING! Exported file does not have a '.wav' file extension");
 	outWAV.copyHeader(inWAV);
-	outWAV.data = skipjack(inWAV.data,rules);
+	outWAV.data = getFinalFullAudio();
 	outWAV.saveToFile(outFile);
 	try{
 		log("!Audio compiled and exported as "+outFile);
@@ -1893,34 +2135,39 @@ function getBlurAvg(){
 }
 
 function selectRuleUnderCursor(){
-	holdVal = project.getRuleIndexByStartPos(mouse.overSampleRaw);
+	holdVal = currentTrack.getRuleIndexByStartPos(mouse.overSampleRaw);
 	if(holdVal > -1){
 		selection.select(holdVal);
 		renderRules();
 	}
+	selection.matchMeasureSelectionToRuleSelection()
+	renderRuler();
 }
 
 function deselectRuleUnderCursor(){
-	holdVal = project.getRuleIndexByStartPos(mouse.overSampleRaw);
+	holdVal = currentTrack.getRuleIndexByStartPos(mouse.overSampleRaw);
 	if(holdVal > -1){
 		selection.deselect(holdVal);
 		renderRules();
 	}
+	selection.matchMeasureSelectionToRuleSelection()
+	renderRuler();
 }
 
 function toggleRuleUnderCursor(){
-	holdVal = project.getRuleIndexByStartPos(mouse.overSampleRaw);
+	holdVal = currentTrack.getRuleIndexByStartPos(mouse.overSampleRaw);
 	var ret = true;
 	if(holdVal > -1){
 		ret = selection.flipSelection(holdVal);
 		renderRules();
 	}
+	selection.matchMeasureSelectionToRuleSelection()
+	renderRuler();
 	return ret;
 }
 
-function skipjackSelected(){
-	var holdRules = selection.getAllSelectedRules();
-	return skipjack(inWAV.data,holdRules);
+function returnSelected(jack){
+	return currentTrack.getAudioSection(rendSet.selectStart,rendSet.selectStart+rendSet.selectLength, jack);
 }
 
 function setPlaybackButtons(boolie){
@@ -1937,7 +2184,7 @@ function createRules(samples,pattern,length,factor,volume,num){
 	var pos = selection.getLastRuleIndex()+1;
 	if(pos == undefined) pos = rules.length;
 	for(var i = 0; i < num; i++){
-		project.addRule(new rule(0,length,volume,factor,samples,pattern),pos);
+		currentTrack.addRule(new rule(0,length,volume,factor,samples,pattern),pos);
 		pos++;
 	}
 	bakeRuleArrayPositions(rules);
@@ -1948,7 +2195,7 @@ function duplicateSelected(){
 	pushRuleState();
 	if(selection.numSelected()){
 		var holdRules = cloneRulesArray(selection.getAllSelectedRules());
-		project.addRuleArray(holdRules,selection.getLastRuleIndex()+1);
+		currentTrack.addRuleArray(holdRules,selection.getLastRuleIndex()+1);
 		renderRules();
 	}else{
 		log("!Cannot duplicate selection; nothing selected");
@@ -1960,7 +2207,7 @@ function deleteSelected(){
 	pushRuleState();
 	if(selection.numSelected()){
 		var holdRules = selection.getAllSelectedIndexes();
-		project.delRuleArray(holdRules);
+		currentTrack.delRuleArray(holdRules);
 		renderRules();
 	}else{
 		log("!Cannot delete selection; nothing selected");
@@ -1995,7 +2242,7 @@ function pasteRules(){
 	if(clipboard.length){
 		var holdPos = selection.getLastRuleIndex();
 		if(holdPos == -1) holdPos = rules.length;
-		project.addRuleArray(clipboard,holdPos+1);
+		currentTrack.addRuleArray(clipboard,holdPos+1);
 		renderRules();
 	}else{
 		log("!Clipboard is empty");
@@ -2043,13 +2290,15 @@ function getAllPropsAvg(){
 function playInWAV(){
 	if(!playingAudio){
 		playingAudio = true;
+		/*
 		if(selection.numSelected() <= 0){
 			log("!Nothing is selected, cannot play segment");
 			return;
 		}
+		*/
 		setPlaybackButtons(true);
 		outWAV.copyHeader(inWAV);
-		outWAV.data = getSegmentSection(inWAV.data,selection.getStart(),selection.getLength());
+		outWAV.data = returnSelected(false);
 		outWAV.saveToFile('./temp.wav',function(e){
 			if(e){
 				return console.log(e);
@@ -2057,7 +2306,7 @@ function playInWAV(){
 			log("!Temp file saved");
 			setStopButton(false);
 			log(">Loading temp file and starting playback...");
-			player.play({path:"./temp.wav", sync: true, loop:true}).then(() => {
+			player.play({path:"./temp.wav", sync: true, loop: true}).then(() => {
 				log("!Playback started");
 			});
 		});
@@ -2070,21 +2319,52 @@ function playInWAV(){
 function playOutWAV(){
 	if(!playingAudio){
 		playingAudio = true;
+		setStopButton(false);
+		/*
 		if(selection.numSelected() <= 0){
 			log("!Nothing is selected, cannot play segment");
 			return;
 		}
+		*/
 		setPlaybackButtons(true);
 		outWAV.copyHeader(inWAV);
-		outWAV.data = skipjackSelected();
+		outWAV.data = returnSelected(true);
 		outWAV.saveToFile('./temp.wav',function(e){
 			if(e){
 				return console.log(e);
 			}
 			log("!Temp file saved");
-			setStopButton(false);
 			log(">Loading temp file and starting playback...");
-			player.play({path:"./temp.wav", sync: true, loop:true}).then(() => {
+			player.play({path:"./temp.wav", sync: true, loop: true}).then(() => {
+				log("!Playback started");
+			});
+		});
+	}else{
+		stopWAV();
+	}
+	return false;
+}
+
+function playExpWAV(){
+	if(!playingAudio){
+		playingAudio = true;
+		setStopButton(false);
+		/*
+		if(selection.numSelected() <= 0){
+			log("!Nothing is selected, cannot play segment");
+			return;
+		}
+		*/
+		setPlaybackButtons(true);
+		outWAV.copyHeader(inWAV);
+		outWAV.data = getFinalSegment(rendSet.selectStart,rendSet.selectStart+rendSet.selectLength);
+		outWAV.saveToFile('./temp.wav',function(e){
+			if(e){
+				return console.log(e);
+			}
+			log("!Temp file saved");
+			log(">Loading temp file and starting playback...");
+			player.play({path:"./temp.wav", sync: true, loop: true}).then(() => {
 				log("!Playback started");
 			});
 		});
@@ -2117,20 +2397,20 @@ function changeChannelView(chan){
 }
 
 function pushRuleState(){
-	project.pushRules();
+	currentTrack.pushRules();
 	renderViewStats();
 	return false;
 }
 
 function undo(){
-	if(!project.undoRules()) log("!Out of undos; cannot undo any further");
+	if(!currentTrack.undoRules()) log("!Out of undos; cannot undo any further");
 	renderRules();
 	renderViewStats();
 	return false;
 }
 
 function redo(){
-	if(!project.redoRules()) log("!Out of redos; cannot redo any further");
+	if(!currentTrack.redoRules()) log("!Out of redos; cannot redo any further");
 	renderRules();
 	renderViewStats();
 	return false;
@@ -2140,7 +2420,7 @@ function splitRule(ruleIndex,noBake){
 	if(rules.inBounds(ruleIndex)){
 		var isSelected = selection.isSelected(ruleIndex);
 		rules[ruleIndex].length /= 2; //half the length
-		project.addRule(new rule(rules[ruleIndex]),ruleIndex); //clone it and put it in
+		currentTrack.addRule(new rule(rules[ruleIndex]),ruleIndex); //clone it and put it in
 		if(isSelected) selection.select(ruleIndex); //make sure to select both, if the first was selected
 		if(!noBake) bakeRuleArrayPositions(rules); //no funny business
 	}else{
@@ -2155,7 +2435,7 @@ function splitSelected(){
 		log("!Nothing is selected; could not split rule");
 		return false;
 	}
-	project.pushRules();
+	currentTrack.pushRules();
 	for(var i = holdRules.length-1; i > -1; i--) splitRule(holdRules[i],true);
 	bakeRuleArrayPositions(rules);
 	renderRules();
@@ -2171,14 +2451,14 @@ function joinSelected(){
 		log("!Selection is not continuous; could not join");
 		return false;
 	}
-	project.pushRules();
+	currentTrack.pushRules();
 	var holdRules = selection.getAllSelectedIndexes();
 	var holdLength = 0;
 	var nonHomogenous = false;
 	for(var i = holdRules.length-1; i > 0; i--){ //we do this backwards so they delete in the right order
 		holdLength += rules[holdRules[i]].length;
 		if(rules[holdRules[i]].factor !== rules[holdRules[0]].factor || rules[holdRules[i]].pattern !== rules[holdRules[0]].pattern) nonHomogenous = true; 
-		project.delRule(holdRules[i]);
+		currentTrack.delRule(holdRules[i]);
 	}
 	rules[holdRules[0]].length += holdLength; //make it take up the whole width
 	bakeRuleArrayPositions(rules);
@@ -2198,7 +2478,30 @@ function extendSelection(toIndex){
 	renderRules();
 }
 
+function setMeasureSelection(pos){
+	rendSet.selectStart = pos;
+	rendSet.selectLength = 1;
+	renderRuler();
+}
 
+function extendMeasureSelection(pos){
+	var midPoint = rendSet.selectStart+rendSet.selectLength/2;
+	if(pos > midPoint){ //to the right of the middle
+		var diff = pos - (rendSet.selectStart+rendSet.selectLength);
+		rendSet.selectLength += diff;
+	}else{ //to the left
+		var diff = rendSet.selectStart - pos;
+		rendSet.selectStart = pos;
+		rendSet.selectLength += diff;
+	}
+	renderRuler();
+}
+
+function switchToNextTrack(){
+	if(++currentTrackNum == tracks.length) currentTrackNum = 0;
+	changeTracks(currentTrackNum);
+	return false;
+}
 
 
 
@@ -2221,15 +2524,8 @@ function extendSelection(toIndex){
 window.addEventListener('DOMContentLoaded', () => {
 	
 	
-	
-	project = new projectClass();
-	
-	inWAV = project.WAVFile;
-	rules = project.rules;
-	selection = project.selection;
-	
-	rules.push(new rule(0,44100*4,1,2,"F,0.5;G,0.5","FGgG")); //make the first rule
-	bakeRuleArrayPositions(rules);
+	changeTracks(newTrack(),true); //create a new track, switch to it and surpress render
+	refreshTracksBox();
 	
 	canvas = document.getElementById('waveformCanvas');
 	canvas2 = document.getElementById('ruleCanvas');
@@ -2237,18 +2533,9 @@ window.addEventListener('DOMContentLoaded', () => {
 	
 	waveCan = new canvasRenderer(canvas, canvas2); //get the canvas(es)
 	
-	
-	const replaceText = (selector, text) => {
-		const element = document.getElementById(selector)
-		if (element) element.innerText = text
-	}
-/*
-	for (const type of ['chrome', 'node', 'electron']) {
-		replaceText(`${type}-version`, process.versions[type])
-	}
-*/
 	reloadCanvas();
 	window.addEventListener('resize', reloadCanvas);
+	
 	
 	
 	//███████████████████████████████████████████//BUTTON FUNCTIONS//███████████████████████████████████████████//
@@ -2343,16 +2630,17 @@ window.addEventListener('DOMContentLoaded', () => {
 		log("CTRL-N......: Create new rule");
 		log("CTRL-J......: Join selection");
 		log("CTRL-K......: Split selection");
-		log("CTRL-SPACE..: Skip and play selected audio");
-		log("SHIFT-SPACE.: Play source audio in selection");
 		log("CTRL-E......: Export final");
 		log("CTRL-X......: Cut Selection");
 		log("CTRL-C......: Copy Selection");
 		log("CTRL-V......: Paste Selection");
 		log("CTRL-Z......: Undo");
 		log("CTRL-Y......: Redo");
-		log("SPACE.......: Stop audio playing");
 		log("TAB.........: Change channel view");
+		log("CTRL-TAB....: Change track view");
+		log("CTRL-SPACE..: Skip and play selected audio");
+		log("SHIFT-SPACE.: Play source audio in selection");
+		log("SPACE.......: Stop audio playing");
 	});
 	
 	//quick patterns
@@ -2363,7 +2651,7 @@ window.addEventListener('DOMContentLoaded', () => {
 			var pattern = document.getElementById('patternHolder'+num).value;
 			document.getElementById('samplesText').value = samples;
 			document.getElementById('patternText').value = pattern;
-			project.pushRules();
+			currentTrack.pushRules();
 			setSamples(samples);
 			setPattern(pattern);
 		});
@@ -2641,10 +2929,13 @@ window.addEventListener('DOMContentLoaded', () => {
 		setColor(document.getElementById('colorText').value);
 	});
 	
-	//export settings
+	//track settings
 	document.getElementById('expFacSet').addEventListener("click", function(){
 		exportSet.finalSpeedFactor = pFloat(document.getElementById('expFac').value);
 		renderRules();
+	});
+	document.getElementById('expVolSet').addEventListener("click", function(){
+		exportSet.volume = pFloat(document.getElementById('expVol').value);
 	});
 	document.getElementById('expSewSet').addEventListener("click", function(){
 		exportSet.smoothingRate = r(pFloat(document.getElementById('expSew').value));
@@ -2652,12 +2943,21 @@ window.addEventListener('DOMContentLoaded', () => {
 	document.getElementById('expBlurSet').addEventListener("click", function(){
 		exportSet.blurLength = r(pFloat(document.getElementById('expBlur').value));
 	});
+	document.getElementById('expSewSet').addEventListener("click", function(){
+		exportSet.smoothingRate = r(pFloat(document.getElementById('expSew').value));
+	});
+	document.getElementById('expNameSet').addEventListener("click", function(){
+		currentTrack.props.name = document.getElementById('expName').value;
+		refreshTracksBox();
+	});
 	
 	
 	//play/stop buttons
 	document.getElementById('playIn').addEventListener("click", playInWAV);
 	
 	document.getElementById('playOut').addEventListener("click", playOutWAV);
+	
+	document.getElementById('playExp').addEventListener("click", playExpWAV);
 		
 	document.getElementById('stopButton').addEventListener("click", stopWAV);
 	
@@ -2667,13 +2967,10 @@ window.addEventListener('DOMContentLoaded', () => {
 	
 	//keep track of mouse pos
 	$(document).mousemove(function(event) {
+		//var canvasElement = document.getElementById('waveformCanvas');
         mouse.x = event.pageX-10;
-        mouse.y = event.pageY-10;
+        mouse.y = event.pageY-32;
 		if(mouse.m1){
-			if(mouse.ly >= ruleHeadspace && mouse.ly < waveCan.getHeight()-measureBottomspace-ruleBottomspace){ //drag space
-				var holdSample = r(mouse.x*rendSet.spp+rendSet.start*inWAV.getSampleRate());
-				setOffset((mouse.overSample-mouse.x*rendSet.spp)/inWAV.getSampleRate());
-			}
 			if(mouse.ly >= 0 && mouse.ly < ruleHeadspace-ruleSampleLabelSpace-ruleDraggerSpace){ //select space
 				if(!event.ctrlKey){
 					selectRuleUnderCursor();
@@ -2697,8 +2994,17 @@ window.addEventListener('DOMContentLoaded', () => {
 							if(rules[holdIndex].length < 1) rules[holdIndex].length = 0;
 						}
 					}
+					selection.matchMeasureSelectionToRuleSelection();
+					renderRuler();
 					renderRules();
 				}
+			}
+			if(mouse.ly >= ruleHeadspace && mouse.ly < waveCan.getHeight()-measureBottomspace-ruleBottomspace){ //drag space
+				var holdSample = r(mouse.x*rendSet.spp+rendSet.start*inWAV.getSampleRate());
+				setOffset((mouse.overSample-mouse.x*rendSet.spp)/inWAV.getSampleRate());
+			}
+			if(mouse.ly >= waveCan.getHeight()-measureBottomspace && mouse.ly < waveCan.getHeight()){
+				extendMeasureSelection(mouse.overSampleRaw);
 			}
 		}else{
 			mouse.lx = mouse.x;
@@ -2711,22 +3017,31 @@ window.addEventListener('DOMContentLoaded', () => {
 	
 	//keep track of mouse press
 	document.body.onmousedown = function(event) {
-		mouse.m1 = true;
-		if(mouse.ly >= ruleHeadspace-ruleSampleLabelSpace-ruleDraggerSpace && mouse.ly < ruleHeadspace){ //scale space
-			pushRuleState();
-		}
-		if(mouse.ly >= 0 && mouse.ly < ruleHeadspace-ruleSampleLabelSpace-ruleDraggerSpace){
-			if(event.ctrlKey){
-				mouse.selecting = toggleRuleUnderCursor();
-			}else{
-				if(!event.shiftKey){
-					selection.clear();
-					renderRules();
+		if(inWAV.getLengthInSegments()){ //only process this if the in wave is set
+			mouse.m1 = true;
+			if(mouse.ly >= ruleHeadspace-ruleSampleLabelSpace-ruleDraggerSpace && mouse.ly < ruleHeadspace){ //scale space
+				pushRuleState();
+			}
+			if(mouse.ly >= 0 && mouse.ly < ruleHeadspace-ruleSampleLabelSpace-ruleDraggerSpace){
+				if(event.ctrlKey){
+					mouse.selecting = toggleRuleUnderCursor();
 				}else{
-					extendSelection(project.getRuleIndexByStartPos(mouse.overSampleRaw)); //get rule mouse is over and extend to it
-					renderRules();
+					if(!event.shiftKey){
+						selection.clear();
+						renderRules();
+					}else{
+						extendSelection(currentTrack.getRuleIndexByStartPos(mouse.overSampleRaw)); //get rule mouse is over and extend to it
+						renderRules();
+					}
+					selectRuleUnderCursor();
 				}
-				selectRuleUnderCursor();
+			}
+			if(mouse.ly >= waveCan.getHeight()-measureBottomspace && mouse.ly < waveCan.getHeight()){
+				if(!event.shiftKey){
+					setMeasureSelection(mouse.overSampleRaw);
+				}else{
+					extendMeasureSelection(mouse.overSampleRaw);
+				}
 			}
 		}
 	}
@@ -2758,17 +3073,22 @@ window.addEventListener('DOMContentLoaded', () => {
 			setOffset(rendSet.start + difference/inWAV.getSampleRate());
 		}
 		renderViewStats();
+		return false;
     });
 	
 	//███████████████████████████████████████████//ADVANCED KEYBINDS//███████████████████████████████████████████//
 	Mousetrap.bind(['command+a', 'ctrl+a'], function() {
 		selection.selectAll();
 		renderRules();
+		selection.matchMeasureSelectionToRuleSelection();
+		renderRuler();
 		return false;
 	});
 	Mousetrap.bind(['command+q', 'ctrl+q'], function() {
 		selection.clear();
 		renderRules();
+		selection.matchMeasureSelectionToRuleSelection();
+		renderRuler();
 		return false;
 	});
 	Mousetrap.bind(['command+d', 'ctrl+d'], duplicateSelected);
@@ -2787,8 +3107,10 @@ window.addEventListener('DOMContentLoaded', () => {
 	Mousetrap.bind(['command+shift+z', 'ctrl+shift+z'], redo);
 	Mousetrap.bind(['shift+space', 'shift+space'], playInWAV);
 	Mousetrap.bind(['command+space', 'ctrl+space'], playOutWAV);
+	Mousetrap.bind(['command+shift+space', 'ctrl+shift+space'], playExpWAV);
 	Mousetrap.bind(['space'], stopWAV);
 	Mousetrap.bind(['tab'], changeChannelView);
+	Mousetrap.bind(['control+tab','ctrl+tab'], switchToNextTrack);
 	
 	
 })
