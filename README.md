@@ -1,4 +1,4 @@
-# Graphical Skipjacker
+# Skipjacker 2 - Graphical Skipjacker
 
 **Clone and run for a quick way to see Electron in action.**
 
